@@ -1,0 +1,57 @@
+name: Build HCV-1000 Love & Berry iOS core
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          brew install cmake ninja python
+
+      - name: Extract source ZIP
+        run: |
+          mkdir -p unpacked
+          unzip -q HCV1000_LoveBerry_iOS_REBUILT_v4.zip -d unpacked
+
+      - name: Locate source
+        run: |
+          SOURCE_DIR="$(dirname "$(find unpacked -name CMakeLists.txt -print -quit)")"
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "Source: $SOURCE_DIR"
+
+      - name: Configure iOS ARM64
+        run: |
+          cmake -S "$SOURCE_DIR" -B build-ios -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$SOURCE_DIR/cmake/toolchain/ios.toolchain.cmake" \
+            -DPLATFORM=OS64 \
+            -DDEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_AS_SHARED_LIBRARY=ON \
+            -DENABLE_JIT=OFF \
+            -DENABLE_OPENGL=OFF
+
+      - name: Build
+        run: |
+          cmake --build build-ios -j 3
+
+      - name: Collect
+        run: |
+          mkdir -p artifact
+          find build-ios -name 'melondsds_libretro*.dylib' -exec cp {} artifact/ \;
+          cp "$SOURCE_DIR/melondsds_libretro.info.in" artifact/melondsds_libretro.info.template
+          cp "$SOURCE_DIR/LICENSE" artifact/
+          cd artifact
+          zip -r ../HCV1000_LoveBerry_iOS_core.zip .
+
+      - name: Upload iOS core
+        uses: actions/upload-artifact@v4
+        with:
+          name: HCV1000-LoveBerry-iOS-core
+          path: HCV1000_LoveBerry_iOS_core.zip
