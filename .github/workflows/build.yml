@@ -1,243 +1,154 @@
-name: Analyze HCV-1000 Love & Berry ZIP
+name: Build HCV-1000 Love & Berry iOS core
 
 on:
   workflow_dispatch:
 
 jobs:
-  analyze:
+  build:
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify ZIP
+      - name: Install tools
         run: |
-          set -e
+          brew install cmake ninja
 
-          ZIP="HCV1000_LoveBerry_iOS_REBUILT_v4.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: ZIP not found:"
-            echo "$ZIP"
-            exit 1
-          fi
-
-          echo "ZIP found:"
-          ls -lh "$ZIP"
-
-          echo
-          echo "SHA256:"
-          shasum -a 256 "$ZIP"
-
-      - name: Extract ZIP
+      - name: Extract source ZIP
         run: |
-          set -e
-
-          rm -rf unpacked analysis
-          mkdir -p unpacked analysis
-
+          rm -rf unpacked
+          mkdir -p unpacked
           unzip -q HCV1000_LoveBerry_iOS_REBUILT_v4.zip -d unpacked
 
-      - name: Analyze ZIP structure
+      - name: Locate CMake project
         shell: bash
         run: |
           set -e
 
-          REPORT="analysis/REPORT.txt"
+          CMAKE_FILE="$(find unpacked -type f -name 'CMakeLists.txt' -print -quit)"
 
-          {
-            echo "========================================"
-            echo "HCV-1000 Love & Berry ZIP ANALYSIS"
-            echo "========================================"
-            echo
+          if [ -z "$CMAKE_FILE" ]; then
+            echo "ERROR: CMakeLists.txt not found."
+            find unpacked -type f | sort
+            exit 1
+          fi
 
-            echo "ZIP:"
-            echo "HCV1000_LoveBerry_iOS_REBUILT_v4.zip"
-            echo
+          SOURCE_DIR="$(dirname "$CMAKE_FILE")"
 
-            echo "SHA256:"
-            shasum -a 256 HCV1000_LoveBerry_iOS_REBUILT_v4.zip
-            echo
+          echo "CMAKE_FILE=$CMAKE_FILE"
+          echo "SOURCE_DIR=$SOURCE_DIR"
 
-            echo "========================================"
-            echo "ALL FILES"
-            echo "========================================"
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
 
-            find unpacked -type f -print | sort
+      - name: Locate iOS toolchain
+        shell: bash
+        run: |
+          set -e
 
-            echo
-            echo "========================================"
-            echo "CMakeLists.txt"
-            echo "========================================"
+          TOOLCHAIN_FILE="$(find "$SOURCE_DIR" -type f -name 'ios.toolchain.cmake' -print -quit)"
 
-            find unpacked \
-              -type f \
-              -name 'CMakeLists.txt' \
-              -print | sort
+          if [ -z "$TOOLCHAIN_FILE" ]; then
+            echo "ERROR: ios.toolchain.cmake not found."
+            find "$SOURCE_DIR" -type f | grep -Ei 'toolchain|ios' || true
+            exit 1
+          fi
 
-            echo
-            echo "========================================"
-            echo "iOS TOOLCHAIN"
-            echo "========================================"
+          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
+          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE" >> "$GITHUB_ENV"
 
-            find unpacked \
-              -type f \
-              -name 'ios.toolchain.cmake' \
-              -print | sort
+      - name: Verify source
+        run: |
+          echo "SOURCE_DIR=$SOURCE_DIR"
+          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
 
-            echo
-            echo "========================================"
-            echo "MAKEFILES"
-            echo "========================================"
+          test -f "$SOURCE_DIR/CMakeLists.txt"
+          test -f "$TOOLCHAIN_FILE"
 
-            find unpacked \
-              -type f \
-              \( \
-                -name 'Makefile' \
-                -o -name 'Makefile.libretro' \
-                -o -name 'GNUmakefile' \
-              \) \
-              -print | sort
+      - name: Verify Apple SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+          cmake --version
+          ninja --version
 
-            echo
-            echo "========================================"
-            echo "LIBRETRO FILES"
-            echo "========================================"
+      - name: Configure iOS ARM64
+        shell: bash
+        run: |
+          set -e
 
-            find unpacked \
-              -type f \
-              \( \
-                -iname '*libretro*' \
-                -o -iname '*.info' \
-                -o -iname '*.info.in' \
-              \) \
-              -print | sort
+          rm -rf build-ios
 
-            echo
-            echo "========================================"
-            echo "HCV / CARD / BARCODE FILE NAMES"
-            echo "========================================"
+          cmake \
+            -S "$SOURCE_DIR" \
+            -B build-ios \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+            -DPLATFORM=OS64 \
+            -DDEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_AS_SHARED_LIBRARY=ON \
+            -DENABLE_JIT=OFF \
+            -DENABLE_OPENGL=OFF
 
-            find unpacked \
-              -type f \
-              | grep -Ei 'hcv|card|barcode|sega|reader|slot2|slot_2' \
+      - name: Build
+        run: |
+          cmake --build build-ios -j 3
+
+      - name: Inspect generated files
+        run: |
+          echo "=== Generated files ==="
+          find build-ios -type f \
+            \( -name '*.dylib' -o -name '*libretro*' \) \
+            -print | sort
+
+      - name: Check HCV-1000 symbols
+        run: |
+          echo "=== HCV-1000 related strings ==="
+
+          find build-ios -type f -name '*.dylib' -print0 |
+          while IFS= read -r -d '' file; do
+            echo "----- $file -----"
+            strings "$file" | grep -Ei \
+              'HCV|1000|barcode|card.?reader|love.?berry|sega' \
               || true
+          done
 
-            echo
-            echo "========================================"
-            echo "SOURCE FILE TYPES"
-            echo "========================================"
-
-            find unpacked \
-              -type f \
-              | grep -Ei '\.(c|cc|cpp|cxx|h|hpp|m|mm|cmake|mk)$' \
-              | sort
-
-            echo
-            echo "========================================"
-            echo "POSSIBLE BUILD SYSTEM"
-            echo "========================================"
-
-            CMAKE_COUNT=$(
-              find unpacked \
-                -type f \
-                -name 'CMakeLists.txt' \
-                | wc -l \
-                | tr -d ' '
-            )
-
-            TOOLCHAIN_COUNT=$(
-              find unpacked \
-                -type f \
-                -name 'ios.toolchain.cmake' \
-                | wc -l \
-                | tr -d ' '
-            )
-
-            MAKE_COUNT=$(
-              find unpacked \
-                -type f \
-                \( \
-                  -name 'Makefile' \
-                  -o -name 'Makefile.libretro' \
-                  -o -name 'GNUmakefile' \
-                \) \
-                | wc -l \
-                | tr -d ' '
-            )
-
-            echo "CMakeLists.txt count: $CMAKE_COUNT"
-            echo "ios.toolchain.cmake count: $TOOLCHAIN_COUNT"
-            echo "Makefile count: $MAKE_COUNT"
-            echo
-
-            if [ "$CMAKE_COUNT" -gt 0 ]; then
-              echo "RESULT: CMake source exists."
-            else
-              echo "RESULT: No CMakeLists.txt found."
-            fi
-
-            if [ "$TOOLCHAIN_COUNT" -gt 0 ]; then
-              echo "RESULT: iOS toolchain exists."
-            else
-              echo "RESULT: No ios.toolchain.cmake found."
-            fi
-
-            if [ "$MAKE_COUNT" -gt 0 ]; then
-              echo "RESULT: Makefile-based build files exist."
-            else
-              echo "RESULT: No Makefile-based build files found."
-            fi
-
-            echo
-            echo "========================================"
-            echo "HCV CONTENT SEARCH"
-            echo "========================================"
-
-            grep -RniE \
-              'HCV.?1000|card.?reader|barcode|Sega Card Reader|slot.?2|slot2' \
-              unpacked \
-              --include='*.c' \
-              --include='*.cc' \
-              --include='*.cpp' \
-              --include='*.cxx' \
-              --include='*.h' \
-              --include='*.hpp' \
-              --include='*.m' \
-              --include='*.mm' \
-              --include='*.cmake' \
-              --include='*.txt' \
-              2>/dev/null \
-              | head -n 300 \
-              || true
-
-            echo
-            echo "========================================"
-            echo "ANALYSIS COMPLETE"
-            echo "========================================"
-
-          } > "$REPORT"
-
-          cat "$REPORT"
-
-      - name: Create complete file list
+      - name: Collect core
+        shell: bash
         run: |
-          find unpacked -type f -print | sort \
-            > analysis/FILE_LIST.txt
+          set -e
 
-      - name: Create directory tree
-        run: |
-          find unpacked -type d -print | sort \
-            > analysis/DIRECTORIES.txt
+          rm -rf artifact
+          mkdir -p artifact
 
-      - name: Create analysis ZIP
-        run: |
-          cd analysis
-          zip -r ../HCV1000_LoveBerry_iOS_ANALYSIS.zip .
+          find build-ios \
+            -type f \
+            -name '*.dylib' \
+            -exec cp {} artifact/ \;
 
-      - name: Upload analysis
+          if [ -f "$SOURCE_DIR/melondsds_libretro.info" ]; then
+            cp "$SOURCE_DIR/melondsds_libretro.info" artifact/
+          fi
+
+          if [ -f "$SOURCE_DIR/melondsds_libretro.info.in" ]; then
+            cp "$SOURCE_DIR/melondsds_libretro.info.in" artifact/
+          fi
+
+          echo "=== Artifact ==="
+          find artifact -maxdepth 1 -type f -print
+
+          if ! find artifact -type f -name '*.dylib' -print -quit | grep -q .; then
+            echo "ERROR: No dylib generated."
+            exit 1
+          fi
+
+          cd artifact
+          zip -r ../HCV1000_LoveBerry_iOS_core.zip .
+
+      - name: Upload iOS core
         uses: actions/upload-artifact@v4
         with:
-          name: HCV1000-LoveBerry-iOS-analysis
-          path: HCV1000_LoveBerry_iOS_ANALYSIS.zip
+          name: HCV1000-LoveBerry-iOS-core
+          path: HCV1000_LoveBerry_iOS_core.zip
