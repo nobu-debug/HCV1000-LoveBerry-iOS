@@ -5,111 +5,84 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          brew install cmake ninja python
-
-      - name: Extract source ZIP
+      - name: Extract source
         run: |
           rm -rf unpacked
           mkdir -p unpacked
           unzip -q HCV1000_LoveBerry_iOS_REBUILT_v4.zip -d unpacked
 
-      - name: Locate source and iOS toolchain
+      - name: Inspect source
         run: |
-          echo "=== ZIP contents ==="
-          find unpacked -type f -print
+          echo "=== Files ==="
+          find unpacked -type f | sort
 
           echo
-          echo "=== Searching for ios.toolchain.cmake ==="
-          TOOLCHAIN_FILE="$(find unpacked -type f -name 'ios.toolchain.cmake' -print -quit)"
+          echo "=== Makefiles ==="
+          find unpacked -type f \( \
+            -name 'Makefile' -o \
+            -name 'Makefile.libretro' -o \
+            -name 'GNUmakefile' \
+          \) -print
 
-          if [ -z "$TOOLCHAIN_FILE" ]; then
-            echo "ERROR: ios.toolchain.cmake was not found."
-            echo
-            echo "=== Possible toolchain files ==="
-            find unpacked -type f | grep -Ei 'toolchain|cmake' || true
+      - name: Locate libretro Makefile
+        run: |
+          MAKEFILE="$(find unpacked -type f \
+            \( -name 'Makefile' -o -name 'Makefile.libretro' -o -name 'GNUmakefile' \) \
+            -print -quit)"
+
+          if [ -z "$MAKEFILE" ]; then
+            echo "ERROR: No Makefile was found in the ZIP."
             exit 1
           fi
 
-          echo "Found toolchain:"
-          echo "$TOOLCHAIN_FILE"
+          SOURCE_DIR="$(dirname "$MAKEFILE")"
 
-          echo
-          echo "=== Searching for CMakeLists.txt ==="
-          SOURCE_DIR="$(dirname "$(find unpacked -name CMakeLists.txt -print -quit)")"
+          echo "MAKEFILE=$MAKEFILE"
+          echo "SOURCE_DIR=$SOURCE_DIR"
 
-          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/CMakeLists.txt" ]; then
-            echo "ERROR: CMakeLists.txt was not found."
-            exit 1
-          fi
-
-          echo "Found source:"
-          echo "$SOURCE_DIR"
-
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE" >> "$GITHUB_ENV"
+          echo "MAKEFILE=$MAKEFILE" >> "$GITHUB_ENV"
           echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
 
-      - name: Verify source
+      - name: Verify Apple build tools
         run: |
-          echo "SOURCE_DIR=$SOURCE_DIR"
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+          make --version
 
-          test -f "$SOURCE_DIR/CMakeLists.txt"
-          test -f "$TOOLCHAIN_FILE"
-
-          echo "CMakeLists.txt: OK"
-          echo "ios.toolchain.cmake: OK"
-
-      - name: Configure iOS ARM64
+      - name: Build iOS ARM64
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
-          rm -rf build-ios
+          make platform=ios-arm64 -j3
 
-          cmake \
-            -S "$SOURCE_DIR" \
-            -B build-ios \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-            -DPLATFORM=OS64 \
-            -DDEPLOYMENT_TARGET=15.0 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_AS_SHARED_LIBRARY=ON \
-            -DENABLE_JIT=OFF \
-            -DENABLE_OPENGL=OFF
-
-      - name: Build
+      - name: Find generated core
         run: |
-          cmake --build build-ios -j 3
+          echo "=== Generated dylibs ==="
+          find "$SOURCE_DIR" -type f -name '*.dylib' -print
 
-      - name: Collect
+      - name: Collect artifact
         run: |
           rm -rf artifact
           mkdir -p artifact
 
-          find build-ios \
+          find "$SOURCE_DIR" \
             -type f \
-            -name 'melondsds_libretro*.dylib' \
+            -name '*.dylib' \
             -exec cp {} artifact/ \;
 
-          if [ -f "$SOURCE_DIR/melondsds_libretro.info.in" ]; then
-            cp "$SOURCE_DIR/melondsds_libretro.info.in" \
-              artifact/melondsds_libretro.info.template
+          if ! find artifact -type f -name '*.dylib' -print -quit | grep -q .; then
+            echo "ERROR: No iOS dylib was generated."
+            exit 1
           fi
 
-          if [ -f "$SOURCE_DIR/LICENSE" ]; then
-            cp "$SOURCE_DIR/LICENSE" artifact/
-          fi
-
-          echo "=== Collected files ==="
-          find artifact -maxdepth 1 -type f -print
-
-          test -n "$(find artifact -name '*.dylib' -print -quit)"
+          echo "=== Artifact ==="
+          find artifact -type f -print
 
           cd artifact
           zip -r ../HCV1000_LoveBerry_iOS_core.zip .
