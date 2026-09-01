@@ -1,0 +1,113 @@
+name: Analyze HCV-1000 Love & Berry ZIP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find ZIP
+        run: |
+          echo "=== ZIP files in repository ==="
+          find . -maxdepth 2 -type f -name '*.zip' -print
+
+          ZIP="$(find . -maxdepth 2 -type f -name 'HCV1000_LoveBerry_iOS_REBUILT_v4.zip' -print -quit)"
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: HCV1000 ZIP not found."
+            exit 1
+          fi
+
+          echo "ZIP=$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: List ZIP contents
+        run: |
+          echo "=== ZIP CONTENTS ==="
+          unzip -Z1 "$ZIP" | sort
+
+      - name: Extract ZIP
+        run: |
+          rm -rf unpacked
+          mkdir -p unpacked
+          unzip -q "$ZIP" -d unpacked
+
+      - name: Analyze source structure
+        run: |
+          echo "=== ALL FILES ==="
+          find unpacked -type f -print | sort
+
+          echo
+          echo "=== CMAKE ==="
+          find unpacked -type f \
+            \( -name 'CMakeLists.txt' -o -name 'ios.toolchain.cmake' \) \
+            -print | sort
+
+          echo
+          echo "=== MAKEFILES ==="
+          find unpacked -type f \
+            \( -name 'Makefile' -o -name 'Makefile.libretro' -o -name 'GNUmakefile' \) \
+            -print | sort
+
+          echo
+          echo "=== XCODE ==="
+          find unpacked -type f \
+            \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) \
+            -print | sort
+
+          echo
+          echo "=== LIBRETRO ==="
+          find unpacked -type f \
+            \( -iname '*libretro*' -o -iname '*retro*' \) \
+            -print | sort
+
+          echo
+          echo "=== HCV / CARD ==="
+          find unpacked -type f \
+            \( -iname '*hcv*' -o -iname '*card*' -o -iname '*barcode*' \) \
+            -print | sort
+
+      - name: Create analysis report
+        run: |
+          {
+            echo "HCV-1000 Love & Berry ZIP Analysis"
+            echo
+            echo "=== ZIP CONTENTS ==="
+            unzip -Z1 "$ZIP" | sort
+            echo
+            echo "=== CMAKE ==="
+            find unpacked -type f \
+              \( -name 'CMakeLists.txt' -o -name 'ios.toolchain.cmake' \) \
+              -print | sort
+            echo
+            echo "=== MAKEFILES ==="
+            find unpacked -type f \
+              \( -name 'Makefile' -o -name 'Makefile.libretro' -o -name 'GNUmakefile' \) \
+              -print | sort
+            echo
+            echo "=== XCODE ==="
+            find unpacked -type f \
+              \( -name '*.xcodeproj' -o -name '*.xcworkspace' \) \
+              -print | sort
+            echo
+            echo "=== LIBRETRO ==="
+            find unpacked -type f \
+              \( -iname '*libretro*' -o -iname '*retro*' \) \
+              -print | sort
+            echo
+            echo "=== HCV / CARD ==="
+            find unpacked -type f \
+              \( -iname '*hcv*' -o -iname '*card*' -o -iname '*barcode*' \) \
+              -print | sort
+          } > hcv1000-analysis.txt
+
+      - name: Upload analysis report
+        uses: actions/upload-artifact@v4
+        with:
+          name: HCV1000-ZIP-analysis
+          path: hcv1000-analysis.txt
