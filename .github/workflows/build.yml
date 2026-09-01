@@ -21,36 +21,40 @@ jobs:
           mkdir -p unpacked
           unzip -q HCV1000_LoveBerry_iOS_REBUILT_v4.zip -d unpacked
 
-      - name: Locate iOS toolchain and source
+      - name: Locate source and iOS toolchain
         run: |
-          TOOLCHAIN_FILE="$(find unpacked -type f -path '*/cmake/toolchain/ios.toolchain.cmake' -print -quit)"
+          echo "=== ZIP contents ==="
+          find unpacked -type f -print
+
+          echo
+          echo "=== Searching for ios.toolchain.cmake ==="
+          TOOLCHAIN_FILE="$(find unpacked -type f -name 'ios.toolchain.cmake' -print -quit)"
 
           if [ -z "$TOOLCHAIN_FILE" ]; then
             echo "ERROR: ios.toolchain.cmake was not found."
-            echo "Files containing 'toolchain' or 'ios' were:"
-            find unpacked -type f | grep -Ei 'toolchain|ios' || true
+            echo
+            echo "=== Possible toolchain files ==="
+            find unpacked -type f | grep -Ei 'toolchain|cmake' || true
             exit 1
           fi
 
-          SOURCE_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$TOOLCHAIN_FILE")")")")"
+          echo "Found toolchain:"
+          echo "$TOOLCHAIN_FILE"
 
-          if [ ! -f "$SOURCE_DIR/CMakeLists.txt" ]; then
-            echo "WARNING: CMakeLists.txt was not found at:"
-            echo "$SOURCE_DIR"
+          echo
+          echo "=== Searching for CMakeLists.txt ==="
+          SOURCE_DIR="$(dirname "$(find unpacked -name CMakeLists.txt -print -quit)")"
 
-            SOURCE_DIR="$(dirname "$(find unpacked -name CMakeLists.txt -print -quit)")"
+          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/CMakeLists.txt" ]; then
+            echo "ERROR: CMakeLists.txt was not found."
+            exit 1
           fi
+
+          echo "Found source:"
+          echo "$SOURCE_DIR"
 
           echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE" >> "$GITHUB_ENV"
           echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "Toolchain:"
-          echo "$TOOLCHAIN_FILE"
-          echo
-          echo "Source:"
-          echo "$SOURCE_DIR"
-          echo "================================"
 
       - name: Verify source
         run: |
@@ -102,7 +106,7 @@ jobs:
             cp "$SOURCE_DIR/LICENSE" artifact/
           fi
 
-          echo "Collected files:"
+          echo "=== Collected files ==="
           find artifact -maxdepth 1 -type f -print
 
           test -n "$(find artifact -name '*.dylib' -print -quit)"
