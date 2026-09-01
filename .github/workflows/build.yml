@@ -11,144 +11,127 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          brew install cmake ninja
-
-      - name: Extract source ZIP
-        run: |
-          rm -rf unpacked
-          mkdir -p unpacked
-          unzip -q HCV1000_LoveBerry_iOS_REBUILT_v4.zip -d unpacked
-
-      - name: Locate CMake project
+      - name: Find source ZIP
         shell: bash
         run: |
           set -e
 
-          CMAKE_FILE="$(find unpacked -type f -name 'CMakeLists.txt' -print -quit)"
+          ZIP="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
 
-          if [ -z "$CMAKE_FILE" ]; then
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: Source ZIP not found."
+            exit 1
+          fi
+
+          echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "Using: $ZIP"
+
+      - name: Extract source
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf source
+          mkdir -p source
+
+          unzip -q "$SOURCE_ZIP" -d source
+
+          echo "=== extracted files ==="
+          find source -maxdepth 3 -type f | head -100
+
+      - name: Locate melonDS source
+        shell: bash
+        run: |
+          set -e
+
+          ROOT="$(find source -type f -name CMakeLists.txt -print | head -n 1 | xargs -I{} dirname "{}")"
+
+          if [ -z "$ROOT" ]; then
             echo "ERROR: CMakeLists.txt not found."
-            find unpacked -type f | sort
             exit 1
           fi
 
-          SOURCE_DIR="$(dirname "$CMAKE_FILE")"
+          echo "SOURCE_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Source root: $ROOT"
 
-          echo "CMAKE_FILE=$CMAKE_FILE"
-          echo "SOURCE_DIR=$SOURCE_DIR"
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake ninja pkg-config
 
-          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
-
-      - name: Locate iOS toolchain
+      - name: Configure
         shell: bash
         run: |
           set -e
 
-          TOOLCHAIN_FILE="$(find "$SOURCE_DIR" -type f -name 'ios.toolchain.cmake' -print -quit)"
+          cd "$SOURCE_ROOT"
 
-          if [ -z "$TOOLCHAIN_FILE" ]; then
-            echo "ERROR: ios.toolchain.cmake not found."
-            find "$SOURCE_DIR" -type f | grep -Ei 'toolchain|ios' || true
-            exit 1
-          fi
-
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE" >> "$GITHUB_ENV"
-
-      - name: Verify source
-        run: |
-          echo "SOURCE_DIR=$SOURCE_DIR"
-          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
-
-          test -f "$SOURCE_DIR/CMakeLists.txt"
-          test -f "$TOOLCHAIN_FILE"
-
-      - name: Verify Apple SDK
-        run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-          clang --version
-          cmake --version
-          ninja --version
-
-      - name: Configure iOS ARM64
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf build-ios
-
-          cmake \
-            -S "$SOURCE_DIR" \
-            -B build-ios \
+          cmake -S . -B build \
             -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-            -DPLATFORM=OS64 \
-            -DDEPLOYMENT_TARGET=15.0 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_AS_SHARED_LIBRARY=ON \
-            -DENABLE_JIT=OFF \
-            -DENABLE_OPENGL=OFF
+            -DBUILD_LIBRETRO=ON
 
       - name: Build
+        shell: bash
         run: |
-          cmake --build build-ios -j 3
+          set -e
 
-      - name: Inspect generated files
+          cd "$SOURCE_ROOT"
+          cmake --build build --parallel
+
+      - name: Find generated libretro core
+        shell: bash
         run: |
-          echo "=== Generated files ==="
-          find build-ios -type f \
-            \( -name '*.dylib' -o -name '*libretro*' \) \
-            -print | sort
+          set -e
 
-      - name: Check HCV-1000 symbols
-        run: |
-          echo "=== HCV-1000 related strings ==="
+          CORE="$(find "$SOURCE_ROOT/build" -type f \( \
+            -name '*.dylib' -o \
+            -name '*.framework' -o \
+            -name '*.a' \
+            \) | head -n 1)"
 
-          find build-ios -type f -name '*.dylib' -print0 |
-          while IFS= read -r -d '' file; do
-            echo "----- $file -----"
-            strings "$file" | grep -Ei \
-              'HCV|1000|barcode|card.?reader|love.?berry|sega' \
-              || true
-          done
+          if [ -z "$CORE" ]; then
+            echo "ERROR: No generated iOS/libretro core was found."
+            echo "=== build directory ==="
+            find "$SOURCE_ROOT/build" -maxdepth 5 -type f | head -200
+            exit 1
+          fi
 
-      - name: Collect core
+          echo "CORE=$CORE" >> "$GITHUB_ENV"
+          echo "Generated core: $CORE"
+
+      - name: Package
         shell: bash
         run: |
           set -e
 
           rm -rf artifact
-          mkdir -p artifact
+          mkdir artifact
 
-          find build-ios \
-            -type f \
-            -name '*.dylib' \
-            -exec cp {} artifact/ \;
+          cp -R "$CORE" artifact/
 
-          if [ -f "$SOURCE_DIR/melondsds_libretro.info" ]; then
-            cp "$SOURCE_DIR/melondsds_libretro.info" artifact/
-          fi
+          cp -R "$SOURCE_ROOT/src/libretro/config" artifact/config 2>/dev/null || true
 
-          if [ -f "$SOURCE_DIR/melondsds_libretro.info.in" ]; then
-            cp "$SOURCE_DIR/melondsds_libretro.info.in" artifact/
-          fi
+          cat > artifact/README.txt <<'EOF'
+HCV-1000 Love & Berry iOS/libretro build
 
-          echo "=== Artifact ==="
-          find artifact -maxdepth 1 -type f -print
+Target:
+melonDS DS 1.3.1
 
-          if ! find artifact -type f -name '*.dylib' -print -quit | grep -q .; then
-            echo "ERROR: No dylib generated."
-            exit 1
-          fi
+Game:
+Oshare Majo Love and Berry: DS Collection
 
-          cd artifact
-          zip -r ../HCV1000_LoveBerry_iOS_core.zip .
+Game code:
+ALBJ
+
+Default HCV-1000 card:
+*OUMLMHQ697D*
+
+This build contains the HCV-1000 virtual Slot-2 implementation.
+EOF
 
       - name: Upload iOS core
         uses: actions/upload-artifact@v4
         with:
-          name: HCV1000-LoveBerry-iOS-core
-          path: HCV1000_LoveBerry_iOS_core.zip
+          name: HCV1000-LoveBerry-iOS
+          path: artifact/
