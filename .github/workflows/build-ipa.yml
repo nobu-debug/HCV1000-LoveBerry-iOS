@@ -34,7 +34,7 @@ jobs:
 
           echo "HCV_CORE=$HCV_CORE" >> "$GITHUB_ENV"
 
-          echo "Found:"
+          echo "Found HCV-1000 core:"
           file "$HCV_CORE"
           lipo -info "$HCV_CORE" || true
 
@@ -58,7 +58,11 @@ jobs:
           IPA_URL="$(
             jq -r '
               .assets[]
-              | select(.name | test("Provenance-iOS.*\\.ipa$"; "i"))
+              | select(
+                  (.name | ascii_downcase | endswith(".ipa"))
+                  and
+                  (.name | ascii_downcase | contains("ios"))
+                )
               | .browser_download_url
             ' release.json | head -1
           )"
@@ -68,7 +72,7 @@ jobs:
             exit 1
           fi
 
-          echo "IPA URL:"
+          echo "Selected IPA:"
           echo "$IPA_URL"
 
           curl -fL \
@@ -78,6 +82,7 @@ jobs:
 
           test -s provenance.ipa
 
+          echo "Downloaded:"
           ls -lh provenance.ipa
 
       - name: Unpack Provenance IPA
@@ -100,7 +105,7 @@ jobs:
 
           echo "APP=$APP" >> "$GITHUB_ENV"
 
-          echo "App:"
+          echo "Provenance app:"
           echo "$APP"
 
       - name: Locate Provenance melonDS framework
@@ -129,7 +134,7 @@ jobs:
           echo "PROVENANCE_MELONDS=$FRAMEWORK" >> "$GITHUB_ENV"
           echo "PROVENANCE_MELONDS_DIR=$FRAMEWORK_DIR" >> "$GITHUB_ENV"
 
-          echo "Found:"
+          echo "Found Provenance melonDS:"
           echo "$FRAMEWORK"
 
           file "$FRAMEWORK"
@@ -140,12 +145,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "===== HCV CORE ====="
+          echo "===== HCV-1000 CORE ====="
           file "$HCV_CORE"
           lipo -info "$HCV_CORE" || true
 
           echo
-          echo "===== PROVENANCE CORE ====="
+          echo "===== PROVENANCE MELONDS ====="
           file "$PROVENANCE_MELONDS"
           lipo -info "$PROVENANCE_MELONDS" || true
 
@@ -158,8 +163,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          cp "$HCV_CORE" "$PROVENANCE_MELONDS"
+          echo "Replacing Provenance melonDS binary..."
 
+          cp "$HCV_CORE" "$PROVENANCE_MELONDS"
           chmod 755 "$PROVENANCE_MELONDS"
 
           rm -rf "$PROVENANCE_MELONDS_DIR/_CodeSignature"
@@ -182,6 +188,7 @@ jobs:
 
           test -s HCV1000-LoveBerry-Provenance.ipa
 
+          echo "Created IPA:"
           ls -lh HCV1000-LoveBerry-Provenance.ipa
 
       - name: Verify final IPA
