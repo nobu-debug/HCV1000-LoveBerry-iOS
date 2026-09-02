@@ -1,1 +1,240 @@
+name: Build HCV-1000 Love & Berry IPA
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-ipa:
+    name: Build iOS IPA with HCV-1000 melonDS
+    runs-on: macos-26
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Checkout Provenance
+        uses: actions/checkout@v4
+        with:
+          repository: Provenance-Emu/Provenance
+          ref: develop
+          path: provenance
+          submodules: false
+          fetch-depth: 1
+
+      - name: Initialize Provenance submodules
+        working-directory: provenance
+        run: |
+          set -e
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1 --jobs 4
+
+      - name: Download completed HCV-1000 iOS core
+        uses: actions/download-artifact@v4
+        with:
+          name: HCV1000-LoveBerry-iOS-arm64
+          path: hcvcore
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 33619073086
+
+      - name: Locate HCV-1000 dylib
+        shell: bash
+        run: |
+          set -e
+
+          DYLIB=$(find hcvcore \
+            -type f \
+            -name 'melondsds_libretro.dylib' \
+            -print | head -n 1)
+
+          if [ -z "$DYLIB" ]; then
+            echo "::error::HCV-1000 melondsds_libretro.dylib was not found."
+            find hcvcore -maxdepth 5 -type f | head -100
+            exit 1
+          fi
+
+          echo "HCV_DYLIB=$PWD/$DYLIB" >> "$GITHUB_ENV"
+          echo "Found HCV-1000 core:"
+          file "$DYLIB"
+          lipo -info "$DYLIB"
+
+      - name: Install build tools
+        run: |
+          set -e
+          brew install ldid xcbeautify 2>/dev/null || true
+
+      - name: Protect and install HCV-1000 core
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          MODULES="$PWD/CoresRetro/RetroArch/modules"
+
+          mkdir -p "$MODULES"
+
+          echo "Installing HCV-1000 melonDS core..."
+
+          cp "$HCV_DYLIB" \
+            "$MODULES/melondsds_libretro.dylib"
+
+          touch "$MODULES/melondsds_libretro.dylib.local"
+
+          echo "Installed:"
+          ls -lh "$MODULES/melondsds_libretro.dylib"
+          file "$MODULES/melondsds_libretro.dylib"
+
+      - name: Verify HCV-1000 core is protected
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          MODULES="$PWD/CoresRetro/RetroArch/modules"
+
+          test -f "$MODULES/melondsds_libretro.dylib"
+          test -f "$MODULES/melondsds_libretro.dylib.local"
+
+          echo "HCV-1000 core protection confirmed."
+
+      - name: Generate required Provenance data
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          if [ -x "PVLookup/Scripts/generate_cheatdb_if_needed.sh" ]; then
+            PVLookup/Scripts/generate_cheatdb_if_needed.sh
+          fi
+
+      - name: Build Provenance iOS archive
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -o pipefail
+
+          mkdir -p build
+
+          xcodebuild \
+            -workspace Provenance.xcworkspace \
+            -scheme "Provenance (AppStore) (Release)" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
+            -archivePath "$PWD/build/Provenance.xcarchive" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            SKIP_INSTALL=NO \
+            SWIFT_PACKAGE_ALLOW_WRITING_TO_DIRECTORY="$PWD" \
+            2>&1 | tee "$PWD/build/xcodebuild.log" | xcbeautify
+
+      - name: Verify archived app
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          APP=$(find build/Provenance.xcarchive \
+            -type d \
+            -name 'Provenance.app' \
+            -print | head -n 1)
+
+          if [ -z "$APP" ]; then
+            echo "::error::Provenance.app was not found in archive."
+            find build/Provenance.xcarchive -maxdepth 5 -type d -name '*.app' -print || true
+            exit 1
+          fi
+
+          echo "APP=$PWD/$APP" >> "$GITHUB_ENV"
+
+          echo "Archived application:"
+          echo "$APP"
+
+      - name: Verify HCV-1000 core inside archive
+        shell: bash
+        run: |
+          set -e
+
+          FOUND=$(find "$APP" \
+            -type f \
+            -name 'melondsds_libretro.dylib' \
+            -print | head -n 1)
+
+          if [ -z "$FOUND" ]; then
+            echo "::error::HCV-1000 melondsds_libretro.dylib is not inside the final app."
+            find "$APP" -type f -name '*.dylib' -print | head -100
+            exit 1
+          fi
+
+          echo "HCV-1000 core inside app:"
+          file "$FOUND"
+          lipo -info "$FOUND"
+
+          echo "HCV-1000 core successfully embedded."
+
+      - name: Fakesign main application
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          APP_BINARY="$APP/Provenance"
+          ENTITLEMENTS="$PWD/Provenance/Provenance-AppStore.entitlements"
+
+          if [ -f "$ENTITLEMENTS" ]; then
+            ldid -S"$ENTITLEMENTS" "$APP_BINARY" || true
+          else
+            ldid -S "$APP_BINARY" || true
+          fi
+
+      - name: Create IPA
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf IPA Payload
+
+          mkdir -p IPA/Payload
+
+          cp -pR \
+            "$APP" \
+            "IPA/Payload/Provenance.app"
+
+          cd IPA
+
+          zip -qr \
+            "../HCV1000-LoveBerry-Provenance-iOS.ipa" \
+            Payload
+
+          cd ..
+
+          test -f HCV1000-LoveBerry-Provenance-iOS.ipa
+
+          echo "IPA created:"
+          ls -lh HCV1000-LoveBerry-Provenance-iOS.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HCV1000-LoveBerry-Provenance-iOS-IPA
+          path: provenance/HCV1000-LoveBerry-Provenance-iOS.ipa
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HCV1000-LoveBerry-Provenance-build-log
+          path: provenance/build/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 7
