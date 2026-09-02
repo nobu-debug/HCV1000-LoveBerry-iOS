@@ -38,55 +38,46 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Remove incompatible NDS.cpp patch hunk
+      - name: Exclude incompatible NDS.cpp patch
         shell: bash
         run: |
           set -e
 
-          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+          FILE="source/finalpkg/cmake/FetchDependencies.cmake"
 
-          if [ ! -f "$PATCH" ]; then
-            echo "HCV-1000 patch not found"
+          if [ ! -f "$FILE" ]; then
+            echo "FetchDependencies.cmake not found"
             exit 1
           fi
 
-          python3 - "$PATCH" <<'PY'
+          python3 - "$FILE" <<'PY'
           import sys
-          import re
           from pathlib import Path
 
           path = Path(sys.argv[1])
-          text = path.read_text()
+          lines = path.read_text().splitlines()
 
-          parts = re.split(r'(?=^diff -ruN )', text, flags=re.MULTILINE)
+          output = []
+          inserted = False
 
-          kept = []
-          removed = False
+          for line in lines:
+              output.append(line)
 
-          for part in parts:
-              if part.startswith("diff -ruN "):
-                  header = part.splitlines()[0]
+              if (
+                  not inserted
+                  and "apply --whitespace=nowarn" in line
+              ):
+                  indent = line[:len(line) - len(line.lstrip())]
+                  output.append(indent + "--exclude=src/NDS.cpp")
+                  inserted = True
 
-                  if "/src/NDS.cpp " in header:
-                      print("Removed incompatible NDS.cpp patch section.")
-                      removed = True
-                      continue
-
-              kept.append(part)
-
-          if not removed:
-              print("ERROR: NDS.cpp patch section was not found.")
+          if not inserted:
+              print("ERROR: git apply command was not found.")
               sys.exit(1)
 
-          new_text = "".join(kept)
+          path.write_text("\n".join(output) + "\n")
 
-          if "/src/NDS.cpp " in new_text:
-              print("ERROR: NDS.cpp patch reference still remains.")
-              sys.exit(1)
-
-          path.write_text(new_text)
-
-          print("HCV-1000 patch prepared successfully.")
+          print("Added --exclude=src/NDS.cpp to HCV-1000 patch application.")
           PY
 
       - name: Configure
