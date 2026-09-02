@@ -55,8 +55,6 @@ jobs:
           find_package(Git REQUIRED)
 
           macro(define_git_dependency_vars name default_url default_tag)
-              string(TOLOWER "${name}" name_lower)
-
               set(${name}_URL "${default_url}" CACHE STRING "")
               set(${name}_TAG "${default_tag}" CACHE STRING "")
           endmacro()
@@ -215,9 +213,7 @@ jobs:
               )
           endif()
 
-          if (NOT EXISTS
-              "${MELONDS_SOURCE_DIR}/CMakeLists.txt"
-          )
+          if (NOT EXISTS "${MELONDS_SOURCE_DIR}/CMakeLists.txt")
               message(FATAL_ERROR
                   "melonDS CMakeLists.txt was not found."
               )
@@ -290,9 +286,7 @@ jobs:
           )
 
           #
-          # IMPORTANT:
-          # melonDS DS v1.3.1 requires its own CMake modules
-          # and the embed-binaries CMake module.
+          # CMake modules required by melonDS DS
           #
           set(CMAKE_MODULE_PATH
               "${MELONDS_SOURCE_DIR}/cmake"
@@ -301,7 +295,7 @@ jobs:
           )
 
           #
-          # Add melonDS itself.
+          # Add melonDS
           #
           add_subdirectory(
               "${MELONDS_SOURCE_DIR}"
@@ -363,64 +357,23 @@ jobs:
         run: |
           set -e
 
-          NDS=$(
-            find build \
-              -path "*/melonds-src/src/NDS.cpp" \
-              -type f \
-              -print \
-              -quit
-          )
+          MELONDS_ROOT="build/_deps/melonds-src"
 
-          if [ -z "$NDS" ]; then
-            echo "melonDS NDS.cpp was not found."
+          if [ ! -d "$MELONDS_ROOT/.git" ]; then
+            echo "melonDS git repository was not found."
             exit 1
           fi
-
-          MELONDS_ROOT=$(dirname "$(dirname "$NDS")")
 
           echo "melonDS root:"
           echo "$MELONDS_ROOT"
 
-          test -f \
-            "$MELONDS_ROOT/src/libretro/config/hcv1000.cpp"
+          echo
+          echo "HCV-1000 patch changes:"
+          git -C "$MELONDS_ROOT" status --short
 
-          test -f \
-            "$MELONDS_ROOT/src/libretro/config/hcv1000.hpp"
+          echo
+          echo "Changed files:"
+          git -C "$MELONDS_ROOT" diff --name-only
 
-          test -f \
-            "$MELONDS_ROOT/src/libretro/config/console.cpp"
-
-          echo "HCV-1000 source files verified."
-
-      - name: Build
-        shell: bash
-        run: |
-          set -e
-
-          cmake --build build --parallel
-
-      - name: Package
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf artifact
-          mkdir -p artifact
-
-          cp -R build/. artifact/
-
-          printf '%s\n' \
-            'HCV-1000 Love & Berry iOS core' \
-            'Target: melonDS DS 1.3.1' \
-            'Game: Oshare Majo Love and Berry: DS Collection' \
-            'Game code: ALBJ' \
-            'Default HCV-1000 card: 0UMLMHQ697D' \
-            'This package contains the generated build.' \
-            > artifact/README.txt
-
-      - name: Upload iOS core
-        uses: actions/upload-artifact@v4
-        with:
-          name: HCV1000-LoveBerry-iOS-core
-          path: artifact/
-          if-no-files-found: error
+          CHANGED_FILES=$(
+            git
