@@ -38,47 +38,168 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Exclude incompatible NDS.cpp patch
+      - name: Prepare FetchDependencies
         shell: bash
         run: |
           set -e
 
           FILE="source/finalpkg/cmake/FetchDependencies.cmake"
+          PATCH="${GITHUB_WORKSPACE}/source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
 
           if [ ! -f "$FILE" ]; then
             echo "FetchDependencies.cmake not found"
             exit 1
           fi
 
-          python3 - "$FILE" <<'PY'
-          import sys
-          from pathlib import Path
+          if [ ! -f "$PATCH" ]; then
+            echo "HCV-1000 patch not found"
+            exit 1
+          fi
 
-          path = Path(sys.argv[1])
-          lines = path.read_text().splitlines()
+          cat > "$FILE" <<'CMAKE'
+          macro(define_git_dependency_vars name default_url default_tag)
+              string(TOUPPER ${name} VAR_NAME)
+              string(MAKE_C_IDENTIFIER ${VAR_NAME} VAR_NAME)
 
-          output = []
-          inserted = False
+              if (NOT ${VAR_NAME}_REPOSITORY_URL)
+                  set(
+                      "${VAR_NAME}_REPOSITORY_URL"
+                      "${default_url}"
+                      CACHE STRING
+                      "${name} repository URL. Set this to use a fork."
+                      FORCE
+                  )
+              endif()
 
-          for line in lines:
-              output.append(line)
+              if (NOT ${VAR_NAME}_REPOSITORY_TAG)
+                  set(
+                      "${VAR_NAME}_REPOSITORY_TAG"
+                      "${default_tag}"
+                      CACHE STRING
+                      "${name} repository commit hash or tag. Set this when using a new version or a custom branch."
+                      FORCE
+                  )
+              endif()
+          endmacro()
 
-              if (
-                  not inserted
-                  and "apply --whitespace=nowarn" in line
-              ):
-                  indent = line[:len(line) - len(line.lstrip())]
-                  output.append(indent + "--exclude=src/NDS.cpp")
-                  inserted = True
+          function(fetch_dependency name default_url default_tag)
+              define_git_dependency_vars(${name} ${default_url} ${default_tag})
 
-          if not inserted:
-              print("ERROR: git apply command was not found.")
-              sys.exit(1)
+              if (FETCHCONTENT_SOURCE_DIR_${VAR_NAME})
+                  message(STATUS "Using ${name}: ${FETCHCONTENT_SOURCE_DIR_${VAR_NAME}} (local)")
+              else()
+                  message(STATUS "Using ${name}: ${${VAR_NAME}_REPOSITORY_URL} (ref ${${VAR_NAME}_REPOSITORY_TAG})")
+              endif()
 
-          path.write_text("\n".join(output) + "\n")
+              FetchContent_Declare(
+                  ${name}
+                  GIT_REPOSITORY "${${VAR_NAME}_REPOSITORY_URL}"
+                  GIT_TAG "${${VAR_NAME}_REPOSITORY_TAG}"
+              )
 
-          print("Added --exclude=src/NDS.cpp to HCV-1000 patch application.")
-          PY
+              FetchContent_GetProperties(${name})
+          endfunction()
+
+          fetch_dependency(melonDS "https://github.com/melonDS-emu/melonDS" "7117178")
+          fetch_dependency(libretro-common "https://github.com/libretro/libretro-common" "ad9124f")
+          fetch_dependency("embed-binaries" "https://github.com/andoalon/embed-binaries" "078b62b")
+          fetch_dependency(glm "https://github.com/g-truc/glm" "e7970a8")
+          fetch_dependency(libslirp "https://github.com/JesseTG/libslirp-mirror" "e61dbd4")
+          fetch_dependency(pntr "https://github.com/robloach/pntr" "922aed0")
+          fetch_dependency(fmt "https://github.com/fmtlib/fmt" "11.2.0")
+          fetch_dependency(yamc "https://github.com/yohhoy/yamc" "4e015a7")
+          fetch_dependency(span-lite "https://github.com/martinmoene/span-lite" "00afc28")
+          fetch_dependency(date "https://github.com/HowardHinnant/date" "1ead671")
+
+          fetch_dependency(zlib "https://github.com/madler/zlib" "v1.3.1")
+
+          if (TRACY_ENABLE)
+              fetch_dependency(tracy "https://github.com/wolfpld/tracy" "v0.11.1")
+          endif()
+
+          set(
+              CMAKE_MODULE_PATH
+              "${FETCHCONTENT_BASE_DIR}/melonds-src/cmake"
+              "${FETCHCONTENT_BASE_DIR}/embed-binaries-src/cmake"
+              "${CMAKE_MODULE_PATH}"
+          )
+
+          set(BUILD_STATIC ON)
+          set(BUILD_STATIC_LIBS ON)
+          set(BUILD_QT_SDL OFF)
+          set(ENABLE_GDBSTUB OFF)
+
+          set(GLM_BUILD_LIBRARY ON CACHE BOOL "" FORCE)
+          set(GLM_ENABLE_CXX_17 ON CACHE BOOL "" FORCE)
+
+          option(ENABLE_TESTING "Enable unit testing." OFF)
+
+          set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+          if (${CMAKE_MAJOR_VERSION} VERSION_GREATER_EQUAL 4)
+              set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+          endif()
+
+          message(STATUS "Fetching melonDS source before configuration.")
+
+          FetchContent_Populate(melonDS)
+
+          if (NOT EXISTS "${melonDS_SOURCE_DIR}/CMakeLists.txt")
+              message(FATAL_ERROR "melonDS source was not populated correctly.")
+          endif()
+
+          message(STATUS "melonDS source: ${melonDS_SOURCE_DIR}")
+
+          execute_process(
+              COMMAND
+                  "${GIT_EXECUTABLE}"
+                  -C "${melonDS_SOURCE_DIR}"
+                  apply
+                  --whitespace=nowarn
+                  --exclude=src/NDS.cpp
+                  "${CMAKE_SOURCE_DIR}/patches/melonds-7117178-hcv1000-loveberry.patch"
+              RESULT_VARIABLE HCV_PATCH_RESULT
+              OUTPUT_VARIABLE HCV_PATCH_STDOUT
+              ERROR_VARIABLE HCV_PATCH_STDERR
+          )
+
+          if (NOT HCV_PATCH_RESULT EQUAL 0)
+              message(STATUS "${HCV_PATCH_STDOUT}")
+              message(STATUS "${HCV_PATCH_STDERR}")
+              message(FATAL_ERROR "Failed to apply HCV-1000 patch to melonDS.")
+          endif()
+
+          message(STATUS "HCV-1000 patch applied successfully.")
+
+          add_subdirectory(
+              "${melonDS_SOURCE_DIR}"
+              "${melonDS_BINARY_DIR}"
+          )
+
+          FetchContent_MakeAvailable(
+              libretro-common
+              embed-binaries
+              glm
+              zlib
+              libslirp
+              pntr
+              fmt
+              yamc
+              span-lite
+              date
+          )
+
+          if (TRACY_ENABLE)
+              set(BUILD_SHARED_LIBS OFF)
+              option(TRACY_DELAYED_INIT "" ON)
+              option(TRACY_MANUAL_LIFETIME "" ON)
+              option(TRACY_ON_DEMAND "" ON)
+              option(TRACY_STATIC "" ON)
+              FetchContent_MakeAvailable(tracy)
+          endif()
+          CMAKE
+
+          echo "FetchDependencies.cmake replaced with controlled melonDS/HCV build flow."
 
       - name: Configure
         shell: bash
