@@ -51,45 +51,78 @@ jobs:
           fi
 
           python3 - "$FILE" <<'PY'
-          import re
           import sys
           from pathlib import Path
 
           path = Path(sys.argv[1])
-          text = path.read_text()
+          lines = path.read_text().splitlines()
 
-          pattern = re.compile(
-              r'execute_process\(\s*'
-              r'COMMAND\s+"\$\{GIT_EXECUTABLE\}"\s+-C\s+'
-              r'"\$\{melonds_SOURCE_DIR\}"\s+apply\s+'
-              r'--whitespace=nowarn\s+'
-              r'"\$\{CMAKE_SOURCE_DIR\}/patches/'
-              r'melonds-7117178-hcv1000-loveberry\.patch"\s+'
-              r'RESULT_VARIABLE\s+HCV_PATCH_RESULT\s+'
-              r'OUTPUT_VARIABLE\s+HCV_PATCH_STDOUT\s+'
-              r'ERROR_VARIABLE\s+HCV_PATCH_STDERR\s*'
-              r'\)',
-              re.MULTILINE
-          )
+          out = []
+          i = 0
+          removed_execute = False
+          removed_if = False
 
-          replacement = "set(HCV_PATCH_RESULT 0)"
+          while i < len(lines):
+              line = lines[i]
 
-          new_text, count = pattern.subn(replacement, text, count=1)
+              if not removed_execute and line.strip() == "execute_process(":
+                  block = []
+                  depth = 0
 
-          if count != 1:
-              print("Could not locate the bundled HCV-1000 patch command.")
-              print("Relevant section:")
-              for i, line in enumerate(text.splitlines(), 1):
-                  if "HCV_PATCH" in line or "loveberry.patch" in line:
-                      print(f"{i}: {line}")
+                  while i < len(lines):
+                      current = lines[i]
+                      block.append(current)
+
+                      depth += current.count("(")
+                      depth -= current.count(")")
+
+                      i += 1
+
+                      if depth == 0:
+                          break
+
+                  block_text = "\n".join(block)
+
+                  if (
+                      "HCV_PATCH_RESULT" in block_text
+                      and "melonds-7117178-hcv1000-loveberry.patch" in block_text
+                  ):
+                      print("Removed bundled HCV-1000 execute_process block.")
+                      removed_execute = True
+                      continue
+
+                  out.extend(block)
+                  continue
+
+              if (
+                  removed_execute
+                  and not removed_if
+                  and line.strip() == "if (NOT HCV_PATCH_RESULT EQUAL 0)"
+              ):
+                  i += 1
+
+                  while i < len(lines):
+                      if lines[i].strip() == "endif()":
+                          i += 1
+                          break
+                      i += 1
+
+                  print("Removed bundled HCV-1000 error-check block.")
+                  removed_if = True
+                  continue
+
+              out.append(line)
+              i += 1
+
+          if not removed_execute:
+              print("Bundled HCV-1000 execute_process block was not found.")
               sys.exit(1)
 
-          path.write_text(new_text)
-
-          print("Bundled HCV-1000 patch application disabled.")
+          path.write_text("\n".join(out) + "\n")
+          print("Bundled HCV-1000 patch disabled successfully.")
           PY
 
-      - name: Configure
+      - name: Configure dependencies
         shell: bash
         run: |
           set -e
@@ -133,6 +166,17 @@ jobs:
             "$GITHUB_WORKSPACE/$PATCH"
 
           echo "HCV-1000 patch applied."
+
+      - name: Reconfigure with HCV-1000
+        shell: bash
+        run: |
+          set -e
+
+          cmake \
+            -S source/finalpkg \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         shell: bash
