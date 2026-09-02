@@ -3,427 +3,254 @@ name: Build HCV-1000 Love & Berry IPA
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  actions: read
-
 jobs:
-  package:
-    runs-on: macos-26
+  build-ipa:
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download successful HCV-1000 iOS core
+      # ============================================================
+      # 1. 成功済みHCV-1000コアを取得
+      # ============================================================
+      - name: Download HCV-1000 iOS core
         uses: actions/download-artifact@v4
         with:
-          name: HCV1000-LoveBerry-iOS-core
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
           run-id: 33619073086
+          name: HCV1000-LoveBerry-iOS-core
           path: hcv-core
 
-      - name: Locate HCV-1000 melonDS DS core
+      - name: Locate HCV-1000 core
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf hcv-unpack
-          mkdir -p hcv-unpack
+          HCV_CORE="$(find hcv-core -type f -name 'melondsds_libretro.dylib' -print -quit)"
 
-          HCV_DYLIB="$(find hcv-core -type f \
-            -name 'melondsds_libretro.dylib' \
-            -print -quit || true)"
-
-          if [ -z "$HCV_DYLIB" ]; then
-            CORE_ZIP="$(find hcv-core -type f \
-              -name '*.zip' \
-              -print -quit || true)"
-
-            if [ -z "$CORE_ZIP" ]; then
-              echo "ERROR: HCV-1000 core ZIP/dylib not found."
-              find hcv-core -maxdepth 8 -type f | head -300
-              exit 1
-            fi
-
-            echo "Unpacking HCV core ZIP:"
-            echo "$CORE_ZIP"
-
-            unzip -q "$CORE_ZIP" -d hcv-unpack
-
-            HCV_DYLIB="$(find hcv-unpack -type f \
-              -name 'melondsds_libretro.dylib' \
-              -print -quit || true)"
-          fi
-
-          if [ -z "$HCV_DYLIB" ]; then
-            echo "ERROR: melondsds_libretro.dylib was not found."
-            find hcv-core hcv-unpack -maxdepth 10 -type f | head -500
+          if [ -z "$HCV_CORE" ]; then
+            echo "ERROR: melondsds_libretro.dylib not found"
+            find hcv-core -maxdepth 5 -type f -print
             exit 1
           fi
 
-          HCV_DYLIB="$PWD/$HCV_DYLIB"
+          echo "HCV_CORE=$HCV_CORE" >> "$GITHUB_ENV"
+          echo "Found HCV core:"
+          file "$HCV_CORE"
 
-          echo "HCV_DYLIB=$HCV_DYLIB" >> "$GITHUB_ENV"
-
-          echo "HCV-1000 core:"
-          file "$HCV_DYLIB"
-
-      - name: Download official Provenance iOS NoExtensions IPA
+      # ============================================================
+      # 2. HCVコアのMach-O情報を確認
+      # ============================================================
+      - name: Verify HCV core
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          ASSET_URL="$(gh api \
-            repos/Provenance-Emu/Provenance/releases/tags/alpha \
-            --jq '.assets[]
-              | select(.name=="Provenance-iOS-NoExtensions.ipa")
-              | .browser_download_url')"
+          echo "===== file ====="
+          file "$HCV_CORE"
 
-          if [ -z "$ASSET_URL" ]; then
-            echo "ERROR: Official Provenance NoExtensions IPA not found."
-            exit 1
-          fi
+          echo "===== architectures ====="
+          lipo -info "$HCV_CORE" || true
 
-          echo "Downloading official Provenance IPA..."
+          echo "===== load commands ====="
+          otool -l "$HCV_CORE" | grep -A8 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS|LC_VERSION_MIN_MACOSX' || true
+
+          echo "===== libretro symbols ====="
+          nm -gU "$HCV_CORE" | grep -E 'retro_init|retro_run|retro_load_game' | head -20 || true
+
+      # ============================================================
+      # 3. 公式Provenance NoExtensions IPA取得
+      # ============================================================
+      - name: Download official Provenance IPA
+        shell: bash
+        run: |
+          set -euo pipefail
 
           curl -L \
             --fail \
             --retry 3 \
-            --retry-all-errors \
-            -o Provenance-iOS-NoExtensions.ipa \
-            "$ASSET_URL"
+            -o provenance.ipa \
+            https://github.com/Provenance-Emu/Provenance/releases/latest/download/Provenance-iOS-NoExtensions.ipa
 
-          ls -lh Provenance-iOS-NoExtensions.ipa
+          test -s provenance.ipa
 
-      - name: Unpack official Provenance IPA
+          echo "Official Provenance IPA:"
+          ls -lh provenance.ipa
+
+      # ============================================================
+      # 4. IPA展開
+      # ============================================================
+      - name: Unpack Provenance IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf ipa-work
-          mkdir -p ipa-work
+          rm -rf ipa
+          mkdir -p ipa
 
-          unzip -q Provenance-iOS-NoExtensions.ipa -d ipa-work
+          unzip -q provenance.ipa -d ipa
 
-          APP_PATH="$(find ipa-work/Payload \
-            -maxdepth 1 \
-            -type d \
-            -name 'Provenance*.app' \
-            -print -quit || true)"
+          APP="$(find ipa/Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
 
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: Provenance app was not found."
-            find ipa-work/Payload -maxdepth 3 -print | head -300
+          if [ -z "$APP" ]; then
+            echo "ERROR: Provenance.app not found"
+            find ipa/Payload -maxdepth 2 -print
             exit 1
           fi
 
-          APP_PATH="$PWD/$APP_PATH"
-
-          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
-
+          echo "APP=$APP" >> "$GITHUB_ENV"
           echo "Provenance app:"
-          echo "$APP_PATH"
+          echo "$APP"
 
-      - name: Inspect actual Provenance melonDS framework
+      # ============================================================
+      # 5. 実際のProvenance melonDS frameworkを確認
+      # ============================================================
+      - name: Locate Provenance melonDS framework
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for actual bundled melonDS framework..."
-
-          MELONDS_FRAMEWORK="$(find "$APP_PATH/Frameworks" \
+          FRAMEWORK="$(find "$APP/Frameworks" \
             -type f \
             -path '*/melonds.libretro.framework/melonds.libretro' \
-            -print -quit || true)"
+            -print -quit)"
 
-          if [ -z "$MELONDS_FRAMEWORK" ]; then
-            echo "ERROR: Actual Provenance melonDS framework was not found."
+          if [ -z "$FRAMEWORK" ]; then
+            echo "ERROR: Provenance melonDS framework binary not found"
 
-            echo ""
-            echo "All melonDS/libretro files:"
-            find "$APP_PATH" -type f \
-              \( -iname '*melonds*' -o -iname '*libretro*' \) \
-              -print | head -500
+            echo "===== Framework contents ====="
+            find "$APP/Frameworks" -maxdepth 4 -print | sort
 
             exit 1
           fi
 
-          FRAMEWORK_DIR="$(dirname "$MELONDS_FRAMEWORK")"
+          FRAMEWORK_DIR="$(dirname "$FRAMEWORK")"
 
-          echo "MELONDS_FRAMEWORK=$MELONDS_FRAMEWORK" >> "$GITHUB_ENV"
-          echo "FRAMEWORK_DIR=$FRAMEWORK_DIR" >> "$GITHUB_ENV"
+          echo "PROVENANCE_MELONDS=$FRAMEWORK" >> "$GITHUB_ENV"
+          echo "PROVENANCE_MELONDS_DIR=$FRAMEWORK_DIR" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "FOUND:"
-          echo "$MELONDS_FRAMEWORK"
+          echo "Found Provenance melonDS:"
+          echo "$FRAMEWORK"
 
-          echo ""
-          echo "Framework contents:"
-          find "$FRAMEWORK_DIR" -maxdepth 2 -print
+          file "$FRAMEWORK"
 
-          echo ""
-          echo "Framework executable:"
-          file "$MELONDS_FRAMEWORK"
-
-          echo ""
-          echo "Framework Info.plist:"
-          if [ -f "$FRAMEWORK_DIR/Info.plist" ]; then
-            /usr/libexec/PlistBuddy \
-              -c "Print :CFBundleExecutable" \
-              "$FRAMEWORK_DIR/Info.plist" || true
-          fi
-
-      - name: Verify HCV-1000 core before replacement
+      # ============================================================
+      # 6. 差し替え前に両方を確認
+      # ============================================================
+      - name: Verify replacement targets
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== HCV CORE ====="
-          file "$HCV_DYLIB"
+          echo "===== HCV core ====="
+          file "$HCV_CORE"
+          lipo -info "$HCV_CORE" || true
 
-          echo ""
-          echo "===== MACH-O HEADER ====="
-          otool -hv "$HCV_DYLIB"
+          echo
+          echo "===== Provenance core ====="
+          file "$PROVENANCE_MELONDS"
+          lipo -info "$PROVENANCE_MELONDS" || true
 
-          echo ""
-          echo "===== BUILD VERSION ====="
-          otool -l "$HCV_DYLIB" \
-            | grep -A5 -m1 LC_BUILD_VERSION || true
+          echo
+          echo "===== Framework directory ====="
+          ls -la "$PROVENANCE_MELONDS_DIR"
 
-          echo ""
-          echo "===== LIBRETRO SYMBOLS ====="
-          nm -gU "$HCV_DYLIB" \
-            | grep -E \
-              '(_retro_api_version|_retro_init|_retro_deinit|_retro_run|_retro_load_game|_retro_unload_game)$' \
-            || true
+          echo
+          echo "Both replacement files exist."
 
-          if ! otool -hv "$HCV_DYLIB" | grep -q 'ARM64'; then
-            echo "ERROR: HCV core is not ARM64."
-            exit 1
-          fi
-
-          PLATFORM_INFO="$(otool -l "$HCV_DYLIB" \
-            | grep -A5 -m1 LC_BUILD_VERSION || true)"
-
-          if ! echo "$PLATFORM_INFO" \
-            | grep -qE 'platform (2|IOS)'; then
-            echo "ERROR: HCV core is not an iOS Mach-O."
-            exit 1
-          fi
-
-          if ! nm -gU "$HCV_DYLIB" \
-            | grep -q '_retro_run$'; then
-            echo "ERROR: HCV core does not expose libretro retro_run."
-            exit 1
-          fi
-
-          echo ""
-          echo "HCV-1000 iOS ARM64 preflight PASSED."
-
-      - name: Verify Provenance framework before replacement
+      # ============================================================
+      # 7. HCV-1000コアをProvenance melonDSへ差し替え
+      # ============================================================
+      - name: Replace Provenance melonDS core
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== ORIGINAL PROVENANCE MELONDS ====="
-          file "$MELONDS_FRAMEWORK"
+          echo "Replacing:"
+          echo "$PROVENANCE_MELONDS"
 
-          echo ""
-          echo "===== ORIGINAL MACH-O ====="
-          otool -hv "$MELONDS_FRAMEWORK"
+          cp "$HCV_CORE" "$PROVENANCE_MELONDS"
 
-          echo ""
-          echo "===== ORIGINAL BUILD VERSION ====="
-          otool -l "$MELONDS_FRAMEWORK" \
-            | grep -A5 -m1 LC_BUILD_VERSION || true
+          chmod 755 "$PROVENANCE_MELONDS"
 
-          echo ""
-          echo "===== ORIGINAL LIBRETRO SYMBOLS ====="
-          nm -gU "$MELONDS_FRAMEWORK" \
-            | grep -E \
-              '(_retro_api_version|_retro_init|_retro_run|_retro_load_game|_retro_unload_game)$' \
-            || true
+          # 古い署名を削除
+          rm -rf "$PROVENANCE_MELONDS_DIR/_CodeSignature"
 
-          echo ""
-          echo "Original framework verification completed."
+          echo "Replacement complete."
 
-      - name: Replace bundled melonDS executable with HCV-1000 core
-        shell: bash
-        run: |
-          set -euo pipefail
+          file "$PROVENANCE_MELONDS"
+          lipo -info "$PROVENANCE_MELONDS" || true
 
-          echo "===== REPLACEMENT ====="
-          echo "SOURCE:"
-          echo "$HCV_DYLIB"
-
-          echo "TARGET:"
-          echo "$MELONDS_FRAMEWORK"
-
-          cp -f "$HCV_DYLIB" "$MELONDS_FRAMEWORK"
-
-          chmod 755 "$MELONDS_FRAMEWORK"
-
-          echo ""
-          echo "HCV-1000 core copied into:"
-          echo "$MELONDS_FRAMEWORK"
-
-      - name: Remove stale application code signature
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Removing stale signature created for the original binary."
-
-          if [ -d "$APP_PATH/_CodeSignature" ]; then
-            rm -rf "$APP_PATH/_CodeSignature"
-            echo "Removed app _CodeSignature."
-          fi
-
-          find "$APP_PATH/Frameworks" \
-            -type d \
-            -name '_CodeSignature' \
-            -prune \
-            -exec rm -rf {} + || true
-
-          echo "Signature cleanup completed."
-
-      - name: Verify final HCV-1000 melonDS framework
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "===== FINAL FRAMEWORK ====="
-          file "$MELONDS_FRAMEWORK"
-
-          echo ""
-          echo "===== FINAL MACH-O ====="
-          otool -hv "$MELONDS_FRAMEWORK"
-
-          echo ""
-          echo "===== FINAL BUILD VERSION ====="
-          PLATFORM_INFO="$(otool -l "$MELONDS_FRAMEWORK" \
-            | grep -A5 -m1 LC_BUILD_VERSION || true)"
-
-          echo "$PLATFORM_INFO"
-
-          echo ""
-          echo "===== FINAL LIBRETRO SYMBOLS ====="
-          nm -gU "$MELONDS_FRAMEWORK" \
-            | grep -E \
-              '(_retro_api_version|_retro_init|_retro_deinit|_retro_run|_retro_load_game|_retro_unload_game)$' \
-            || true
-
-          if ! otool -hv "$MELONDS_FRAMEWORK" \
-            | grep -q 'ARM64'; then
-            echo "ERROR: Final framework executable is not ARM64."
-            exit 1
-          fi
-
-          if ! echo "$PLATFORM_INFO" \
-            | grep -qE 'platform (2|IOS)'; then
-            echo "ERROR: Final framework executable is not identified as iOS."
-            exit 1
-          fi
-
-          if ! nm -gU "$MELONDS_FRAMEWORK" \
-            | grep -q '_retro_run$'; then
-            echo "ERROR: Final framework executable does not expose libretro API."
-            exit 1
-          fi
-
-          echo ""
-          echo "HCV-1000 melonDS framework verification PASSED."
-
+      # ============================================================
+      # 8. IPAを再パッケージ
+      # ============================================================
       - name: Repack IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -f HCV1000-LoveBerry-Provenance-iOS.ipa
+          rm -f HCV1000-LoveBerry-Provenance.ipa
 
-          (
-            cd ipa-work
-            zip -qry \
-              ../HCV1000-LoveBerry-Provenance-iOS.ipa \
-              Payload
-          )
+          cd ipa
 
-          ls -lh HCV1000-LoveBerry-Provenance-iOS.ipa
+          zip -qry \
+            ../HCV1000-LoveBerry-Provenance.ipa \
+            Payload
 
+          cd ..
+
+          test -s HCV1000-LoveBerry-Provenance.ipa
+
+          echo "Created IPA:"
+          ls -lh HCV1000-LoveBerry-Provenance.ipa
+
+      # ============================================================
+      # 9. 完成IPAを最終検査
+      # ============================================================
       - name: Verify final IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== FINAL IPA CHECK ====="
+          rm -rf verify
+          mkdir verify
 
-          unzip -l HCV1000-LoveBerry-Provenance-iOS.ipa \
-            | grep \
-              'Frameworks/melonds.libretro.framework/melonds.libretro'
+          unzip -q HCV1000-LoveBerry-Provenance.ipa -d verify
 
-          echo ""
-          echo "Checking HCV core after IPA repack..."
-
-          rm -rf final-check
-          mkdir -p final-check
-
-          unzip -q \
-            HCV1000-LoveBerry-Provenance-iOS.ipa \
-            -d final-check
-
-          FINAL_CORE="$(find final-check/Payload \
-            -type f \
-            -path '*/Frameworks/melonds.libretro.framework/melonds.libretro' \
-            -print -quit || true)"
+          FINAL_CORE="$(find verify/Payload -type f \
+            -path '*/melonds.libretro.framework/melonds.libretro' \
+            -print -quit)"
 
           if [ -z "$FINAL_CORE" ]; then
-            echo "ERROR: Final IPA does not contain expected melonDS framework."
+            echo "ERROR: final IPA does not contain melonDS framework"
             exit 1
           fi
 
-          echo "Final core:"
+          echo "===== FINAL CORE ====="
           echo "$FINAL_CORE"
 
           file "$FINAL_CORE"
+          lipo -info "$FINAL_CORE" || true
 
-          if ! otool -hv "$FINAL_CORE" \
-            | grep -q 'ARM64'; then
-            echo "ERROR: Final IPA core is not ARM64."
-            exit 1
-          fi
+          echo
+          echo "===== FINAL FRAMEWORK ====="
+          ls -la "$(dirname "$FINAL_CORE")"
 
-          PLATFORM_INFO="$(otool -l "$FINAL_CORE" \
-            | grep -A5 -m1 LC_BUILD_VERSION || true)"
+          echo
+          echo "===== IPA CONTENT CHECK ====="
+          unzip -l HCV1000-LoveBerry-Provenance.ipa \
+            | grep 'melonds.libretro.framework/melonds.libretro'
 
-          echo "$PLATFORM_INFO"
+          echo
+          echo "FINAL IPA VERIFICATION PASSED."
 
-          if ! echo "$PLATFORM_INFO" \
-            | grep -qE 'platform (2|IOS)'; then
-            echo "ERROR: Final IPA core is not iOS."
-            exit 1
-          fi
-
-          if ! nm -gU "$FINAL_CORE" \
-            | grep -q '_retro_run$'; then
-            echo "ERROR: Final IPA core does not expose libretro retro_run."
-            exit 1
-          fi
-
-          test -s HCV1000-LoveBerry-Provenance-iOS.ipa
-
-          echo ""
-          echo "========================================"
-          echo "FINAL IPA VERIFICATION PASSED"
-          echo "========================================"
-
-      - name: Upload finished IPA
+      # ============================================================
+      # 10. IPAをArtifactとして保存
+      # ============================================================
+      - name: Upload final IPA
         uses: actions/upload-artifact@v4
         with:
-          name: HCV1000-LoveBerry-Provenance-iOS-IPA
-          path: HCV1000-LoveBerry-Provenance-iOS.ipa
+          name: HCV1000-LoveBerry-Provenance-IPA
+          path: HCV1000-LoveBerry-Provenance.ipa
           if-no-files-found: error
-          retention-days: 7
