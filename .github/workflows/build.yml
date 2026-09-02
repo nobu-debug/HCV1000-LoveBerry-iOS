@@ -19,10 +19,12 @@ jobs:
         run: |
           set -e
           ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
           if [ -z "$ZIP" ]; then
             echo "Source ZIP not found"
             exit 1
           fi
+
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
           echo "Using: $ZIP"
 
@@ -34,7 +36,7 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Neutralize bundled HCV-1000 patch
+      - name: Prepare HCV-1000 patch
         shell: bash
         run: |
           set -e
@@ -42,22 +44,30 @@ jobs:
           PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
 
           if [ ! -f "$PATCH" ]; then
-            echo "Bundled HCV-1000 patch not found: $PATCH"
+            echo "HCV-1000 patch not found: $PATCH"
             exit 1
           fi
 
+          cp "$PATCH" "$RUNNER_TEMP/hcv1000.patch"
           : > "$PATCH"
 
-          echo "Bundled HCV-1000 patch neutralized."
+          echo "Original HCV-1000 patch saved."
+          echo "Bundled patch neutralized."
 
       - name: Configure
         shell: bash
         run: |
           set -e
-          rm -rf build
-          cmake -S source/finalpkg -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-      - name: Inject HCV-1000 into melonDS
+          rm -rf build
+
+          cmake \
+            -S source/finalpkg \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Apply HCV-1000 libretro changes
         shell: bash
         run: |
           set -e
@@ -66,234 +76,21 @@ jobs:
 
           if [ -z "$MELONDS" ]; then
             echo "melonds-src not found after Configure"
-            find build -type f -name CMakeLists.txt -print | head -50
             exit 1
           fi
 
           echo "Using melonDS source: $MELONDS"
 
-          mkdir -p "$MELONDS/src/libretro/config"
+          cd "$MELONDS"
 
-          cat > "$MELONDS/src/libretro/config/hcv1000.hpp" <<'EOF'
-/*
- * HCV-1000 support for Oshare Majo Love and Berry: DS Collection.
- */
+          git apply \
+            --include=src/libretro/CMakeLists.txt \
+            --include=src/libretro/config/console.cpp \
+            --include=src/libretro/config/hcv1000.cpp \
+            --include=src/libretro/config/hcv1000.hpp \
+            "$RUNNER_TEMP/hcv1000.patch"
 
-#pragma once
-
-#include <array>
-#include <cstdint>
-
-#include <GBACart.h>
-
-namespace MelonDsDs {
-
-class Hcv1000Cart final : public melonDS::GBACart::CartCommon {
-public:
-    Hcv1000Cart();
-    ~Hcv1000Cart() override = default;
-
-    void Reset() override;
-    void DoSavestate(melonDS::Savestate* file) override;
-    melonDS::u16 ROMRead(melonDS::u32 addr) const override;
-    void ROMWrite(melonDS::u32 addr, melonDS::u16 val) override;
-    melonDS::u8 SRAMRead(melonDS::u32 addr) override;
-    void SRAMWrite(melonDS::u32 addr, melonDS::u8 val) override;
-
-private:
-    static constexpr char kBarcode[] = "*OUMLMHQ697D*";
-
-    melonDS::u8 Cnt = 0;
-    std::array<melonDS::u8, 16> Data{};
-};
-
-} // namespace MelonDsDs
-EOF
-
-          cat > "$MELONDS/src/libretro/config/hcv1000.cpp" <<'EOF'
-#include "hcv1000.hpp"
-
-#include <algorithm>
-#include <cstring>
-
-namespace MelonDsDs {
-
-Hcv1000Cart::Hcv1000Cart()
-    : CartCommon(static_cast<melonDS::GBACart::CartType>(0x203))
-{
-    Reset();
-}
-
-void Hcv1000Cart::Reset()
-{
-    Data.fill(0x5F);
-    std::memcpy(
-        Data.data(),
-        kBarcode,
-        std::min(Data.size(), sizeof(kBarcode) - 1)
-    );
-    Cnt = 0;
-}
-
-void Hcv1000Cart::DoSavestate(melonDS::Savestate* file)
-{
-    CartCommon::DoSavestate(file);
-    file->Var8(&Cnt);
-    file->VarArray(Data.data(), Data.size());
-}
-
-melonDS::u16 Hcv1000Cart::ROMRead(melonDS::u32 addr) const
-{
-    addr &= 0x01FFFFFF;
-
-    if (addr >= 0x00020000)
-        return 0xFFFF;
-
-    const melonDS::u8 lo =
-        (addr & 1)
-        ? 0xFD
-        : melonDS::u8(0xF0 | ((addr & 0x1F) >> 1));
-
-    const melonDS::u32 next = addr + 1;
-
-    const melonDS::u8 hi =
-        (next & 1)
-        ? 0xFD
-        : melonDS::u8(0xF0 | ((next & 0x1F) >> 1));
-
-    return melonDS::u16(
-        lo | (melonDS::u16(hi) << 8)
-    );
-}
-
-void Hcv1000Cart::ROMWrite(
-    melonDS::u32,
-    melonDS::u16
-)
-{
-}
-
-melonDS::u8 Hcv1000Cart::SRAMRead(melonDS::u32 addr)
-{
-    addr &= 0xFFFF;
-
-    if (addr == 0x0000)
-        return Cnt;
-
-    if (addr >= 0x0010 && addr <= 0x001F)
-        return Data[addr - 0x0010];
-
-    return 0xFF;
-}
-
-void Hcv1000Cart::SRAMWrite(
-    melonDS::u32 addr,
-    melonDS::u8 val
-)
-{
-    addr &= 0xFFFF;
-
-    if (addr != 0x0000)
-        return;
-
-    const melonDS::u8 requested =
-        melonDS::u8(val & 0x83);
-
-    if (requested & 0x80)
-        Cnt = 0x11;
-    else
-        Cnt = requested & 0x01;
-}
-
-} // namespace MelonDsDs
-EOF
-
-          python3 - "$MELONDS/src/libretro/CMakeLists.txt" "$MELONDS/src/libretro/config/console.cpp" <<'PY'
-          import sys
-          from pathlib import Path
-
-          cmake_path = Path(sys.argv[1])
-          console_path = Path(sys.argv[2])
-
-          cmake = cmake_path.read_text()
-
-          if "config/hcv1000.cpp" not in cmake:
-              anchor = "    config/parse.cpp"
-
-              if anchor not in cmake:
-                  raise SystemExit(
-                      "libretro CMakeLists.txt insertion point not found"
-                  )
-
-              cmake = cmake.replace(
-                  anchor,
-                  "    config/hcv1000.cpp\n"
-                  "    config/hcv1000.hpp\n"
-                  + anchor,
-                  1
-              )
-
-              cmake_path.write_text(cmake)
-
-          console = console_path.read_text()
-
-          if '#include "hcv1000.hpp"' not in console:
-              anchor = '#include "config.hpp"\n'
-
-              if anchor not in console:
-                  raise SystemExit(
-                      "console.cpp include insertion point not found"
-                  )
-
-              console = console.replace(
-                  anchor,
-                  anchor + '#include "hcv1000.hpp"\n',
-                  1
-              )
-
-          if "Installed built-in HCV-1000 for Love and Berry (ALBJ)" not in console:
-              anchor = "        switch (config.GetSlot2Device())"
-
-              if anchor not in console:
-                  raise SystemExit(
-                      "console.cpp Slot-2 insertion point not found"
-                  )
-
-              injection = """        if (ndsargs.ndsCart) {
-            const uint8_t* rom = ndsargs.ndsCart->GetROM();
-            const uint32_t romlen = ndsargs.ndsCart->GetROMLength();
-
-            if (rom &&
-                romlen >= 0x10 &&
-                std::string_view(
-                    reinterpret_cast<const char*>(rom + 0x0C),
-                    4
-                ) == "ALBJ")
-            {
-                ndsargs.gbaCart =
-                    std::make_unique<Hcv1000Cart>();
-
-                retro::debug(
-                    "Installed built-in HCV-1000 for Love and Berry (ALBJ)"
-                );
-            }
-        }
-
-        if (ndsargs.gbaCart) {
-            return ndsargs;
-        }
-"""
-
-              console = console.replace(
-                  anchor,
-                  injection + anchor,
-                  1
-              )
-
-          console_path.write_text(console)
-
-          print("HCV-1000 source injection complete.")
-          PY
+          echo "HCV-1000 libretro changes applied."
 
       - name: Build
         shell: bash
