@@ -38,7 +38,7 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Disable bundled patch application
+      - name: Disable bundled HCV-1000 patch
         shell: bash
         run: |
           set -e
@@ -51,35 +51,42 @@ jobs:
           fi
 
           python3 - "$FILE" <<'PY'
+          import re
           import sys
           from pathlib import Path
 
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          target = "melonds-7117178-hcv1000-loveberry.patch"
+          pattern = re.compile(
+              r'execute_process\(\s*'
+              r'COMMAND\s+"\$\{GIT_EXECUTABLE\}"\s+-C\s+'
+              r'"\$\{melonds_SOURCE_DIR\}"\s+apply\s+'
+              r'--whitespace=nowarn\s+'
+              r'"\$\{CMAKE_SOURCE_DIR\}/patches/'
+              r'melonds-7117178-hcv1000-loveberry\.patch"\s+'
+              r'RESULT_VARIABLE\s+HCV_PATCH_RESULT\s+'
+              r'OUTPUT_VARIABLE\s+HCV_PATCH_STDOUT\s+'
+              r'ERROR_VARIABLE\s+HCV_PATCH_STDERR\s*'
+              r'\)',
+              re.MULTILINE
+          )
 
-          lines = text.splitlines(True)
-          found = False
-          output = []
+          replacement = "set(HCV_PATCH_RESULT 0)"
 
-          for line in lines:
-              if target in line and "git apply" in line:
-                  output.append("# DISABLED HCV-1000 bundled patch: " + line)
-                  found = True
-              else:
-                  output.append(line)
+          new_text, count = pattern.subn(replacement, text, count=1)
 
-          if not found:
-              print("Bundled patch command not found.")
-              print("Lines containing HCV/patch:")
-              for i, line in enumerate(lines, 1):
-                  if "HCV" in line or "hcv" in line or "patch" in line:
-                      print(f"{i}: {line.rstrip()}")
+          if count != 1:
+              print("Could not locate the bundled HCV-1000 patch command.")
+              print("Relevant section:")
+              for i, line in enumerate(text.splitlines(), 1):
+                  if "HCV_PATCH" in line or "loveberry.patch" in line:
+                      print(f"{i}: {line}")
               sys.exit(1)
 
-          path.write_text("".join(output))
-          print("Bundled HCV-1000 git apply command disabled.")
+          path.write_text(new_text)
+
+          print("Bundled HCV-1000 patch application disabled.")
           PY
 
       - name: Configure
@@ -114,6 +121,8 @@ jobs:
             exit 1
           fi
 
+          echo "Using melonDS source: $MELONDS"
+
           cd "$MELONDS"
 
           git apply \
@@ -129,6 +138,7 @@ jobs:
         shell: bash
         run: |
           set -e
+
           cmake --build build --parallel
 
       - name: Package
