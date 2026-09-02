@@ -150,9 +150,6 @@ jobs:
               set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
           endif()
 
-          #
-          # melonDS
-          #
           set(MELONDS_SOURCE_DIR
               "${CMAKE_BINARY_DIR}/_deps/melonds-src"
           )
@@ -239,9 +236,6 @@ jobs:
               CACHE PATH "" FORCE
           )
 
-          #
-          # HCV-1000 patch
-          #
           execute_process(
               COMMAND
                   "${GIT_EXECUTABLE}"
@@ -269,9 +263,6 @@ jobs:
 
           message(STATUS "HCV-1000 patch applied successfully.")
 
-          #
-          # Supporting dependencies
-          #
           FetchContent_MakeAvailable(
               libretro-common
               embed-binaries
@@ -285,18 +276,12 @@ jobs:
               date
           )
 
-          #
-          # CMake modules required by melonDS DS
-          #
           set(CMAKE_MODULE_PATH
               "${MELONDS_SOURCE_DIR}/cmake"
               "${FETCHCONTENT_BASE_DIR}/embed-binaries-src/cmake"
               "${CMAKE_MODULE_PATH}"
           )
 
-          #
-          # Add melonDS
-          #
           add_subdirectory(
               "${MELONDS_SOURCE_DIR}"
               "${MELONDS_BINARY_DIR}"
@@ -352,28 +337,35 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Verify HCV-1000 changes
+      - name: Build
         shell: bash
         run: |
           set -e
 
-          MELONDS_ROOT="build/_deps/melonds-src"
+          cmake --build build --parallel
 
-          if [ ! -d "$MELONDS_ROOT/.git" ]; then
-            echo "melonDS git repository was not found."
-            exit 1
-          fi
+      - name: Package
+        shell: bash
+        run: |
+          set -e
 
-          echo "melonDS root:"
-          echo "$MELONDS_ROOT"
+          rm -rf artifact
+          mkdir -p artifact
 
-          echo
-          echo "HCV-1000 patch changes:"
-          git -C "$MELONDS_ROOT" status --short
+          cp -R build/. artifact/
 
-          echo
-          echo "Changed files:"
-          git -C "$MELONDS_ROOT" diff --name-only
+          printf '%s\n' \
+            'HCV-1000 Love & Berry iOS core' \
+            'Target: melonDS DS 1.3.1' \
+            'Game: Oshare Majo Love and Berry: DS Collection' \
+            'Game code: ALBJ' \
+            'Default HCV-1000 card: 0UMLMHQ697D' \
+            'This package contains the generated build.' \
+            > artifact/README.txt
 
-          CHANGED_FILES=$(
-            git
+      - name: Upload iOS core
+        uses: actions/upload-artifact@v4
+        with:
+          name: HCV1000-LoveBerry-iOS-core
+          path: artifact/
+          if-no-files-found: error
