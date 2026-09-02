@@ -34,11 +34,16 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Remove broken NDS patch
+      - name: Disable bundled HCV-1000 patch
         shell: bash
         run: |
           set -e
-          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+          PATCH="source/finalpkg/cmake/FetchDependencies.cmake"
+
+          if [ ! -f "$PATCH" ]; then
+            echo "FetchDependencies.cmake not found"
+            exit 1
+          fi
 
           python3 - "$PATCH" <<'PY'
           import sys
@@ -47,38 +52,27 @@ jobs:
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          parts = text.split("diff --git ")
-          result = []
+          old = 'COMMAND git apply "${CMAKE_CURRENT_LIST_DIR}/../patches/melonds-7117178-hcv1000-loveberry.patch"'
 
-          for part in parts:
-              if not part:
-                  continue
-              if part.startswith("a/src/NDS.cpp b/src/NDS.cpp"):
-                  continue
-              result.append("diff --git " + part)
-
-          path.write_text("".join(result))
-          print("Removed NDS.cpp patch hunk.")
+          if old in text:
+              text = text.replace(
+                  old,
+                  'COMMAND git apply --reverse "${CMAKE_CURRENT_LIST_DIR}/../patches/melonds-7117178-hcv1000-loveberry.patch"'
+              )
+              path.write_text(text)
+              print("Bundled HCV-1000 patch application disabled.")
+          else:
+              print("Expected patch command was not found.")
+              print("FetchDependencies.cmake must be inspected before continuing.")
+              sys.exit(1)
           PY
-
-      - name: Locate CMake project
-        shell: bash
-        run: |
-          set -e
-          CMAKE_DIR=$(find source -name CMakeLists.txt -type f -print -quit | xargs -I{} dirname "{}")
-          if [ -z "$CMAKE_DIR" ]; then
-            echo "CMakeLists.txt not found"
-            exit 1
-          fi
-          echo "CMAKE_DIR=$CMAKE_DIR" >> "$GITHUB_ENV"
-          echo "Using: $CMAKE_DIR"
 
       - name: Configure
         shell: bash
         run: |
           set -e
           rm -rf build
-          cmake -S "$CMAKE_DIR" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S source/finalpkg -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Inject HCV-1000 startup code
         shell: bash
@@ -88,7 +82,7 @@ jobs:
           NDS=$(find build -path "*/melonds-src/src/NDS.cpp" -type f -print -quit)
 
           if [ -z "$NDS" ]; then
-            echo "melonds NDS.cpp not found"
+            echo "melondS NDS.cpp not found"
             find build -name NDS.cpp -print
             exit 1
           fi
