@@ -34,38 +34,21 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Disable bundled HCV-1000 patch
+      - name: Neutralize bundled HCV-1000 patch
         shell: bash
         run: |
           set -e
-          PATCH="source/finalpkg/cmake/FetchDependencies.cmake"
+
+          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
 
           if [ ! -f "$PATCH" ]; then
-            echo "FetchDependencies.cmake not found"
+            echo "Bundled HCV-1000 patch not found: $PATCH"
             exit 1
           fi
 
-          python3 - "$PATCH" <<'PY'
-          import sys
-          from pathlib import Path
+          : > "$PATCH"
 
-          path = Path(sys.argv[1])
-          text = path.read_text()
-
-          old = 'COMMAND git apply "${CMAKE_CURRENT_LIST_DIR}/../patches/melonds-7117178-hcv1000-loveberry.patch"'
-
-          if old in text:
-              text = text.replace(
-                  old,
-                  'COMMAND git apply --reverse "${CMAKE_CURRENT_LIST_DIR}/../patches/melonds-7117178-hcv1000-loveberry.patch"'
-              )
-              path.write_text(text)
-              print("Bundled HCV-1000 patch application disabled.")
-          else:
-              print("Expected patch command was not found.")
-              print("FetchDependencies.cmake must be inspected before continuing.")
-              sys.exit(1)
-          PY
+          echo "Bundled HCV-1000 patch neutralized."
 
       - name: Configure
         shell: bash
@@ -74,54 +57,242 @@ jobs:
           rm -rf build
           cmake -S source/finalpkg -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-      - name: Inject HCV-1000 startup code
+      - name: Inject HCV-1000 into melonDS
         shell: bash
         run: |
           set -e
 
-          NDS=$(find build -path "*/melonds-src/src/NDS.cpp" -type f -print -quit)
+          MELONDS=$(find build -type d -name melonds-src -print -quit)
 
-          if [ -z "$NDS" ]; then
-            echo "melondS NDS.cpp not found"
-            find build -name NDS.cpp -print
+          if [ -z "$MELONDS" ]; then
+            echo "melonds-src not found after Configure"
+            find build -type f -name CMakeLists.txt -print | head -50
             exit 1
           fi
 
-          python3 - "$NDS" <<'PY'
+          echo "Using melonDS source: $MELONDS"
+
+          mkdir -p "$MELONDS/src/libretro/config"
+
+          cat > "$MELONDS/src/libretro/config/hcv1000.hpp" <<'EOF'
+/*
+ * HCV-1000 support for Oshare Majo Love and Berry: DS Collection.
+ */
+
+#pragma once
+
+#include <array>
+#include <cstdint>
+
+#include <GBACart.h>
+
+namespace MelonDsDs {
+
+class Hcv1000Cart final : public melonDS::GBACart::CartCommon {
+public:
+    Hcv1000Cart();
+    ~Hcv1000Cart() override = default;
+
+    void Reset() override;
+    void DoSavestate(melonDS::Savestate* file) override;
+    melonDS::u16 ROMRead(melonDS::u32 addr) const override;
+    void ROMWrite(melonDS::u32 addr, melonDS::u16 val) override;
+    melonDS::u8 SRAMRead(melonDS::u32 addr) override;
+    void SRAMWrite(melonDS::u32 addr, melonDS::u8 val) override;
+
+private:
+    static constexpr char kBarcode[] = "*OUMLMHQ697D*";
+
+    melonDS::u8 Cnt = 0;
+    std::array<melonDS::u8, 16> Data{};
+};
+
+} // namespace MelonDsDs
+EOF
+
+          cat > "$MELONDS/src/libretro/config/hcv1000.cpp" <<'EOF'
+#include "hcv1000.hpp"
+
+#include <algorithm>
+#include <cstring>
+
+namespace MelonDsDs {
+
+Hcv1000Cart::Hcv1000Cart()
+    : CartCommon(static_cast<melonDS::GBACart::CartType>(0x203))
+{
+    Reset();
+}
+
+void Hcv1000Cart::Reset()
+{
+    Data.fill(0x5F);
+    std::memcpy(
+        Data.data(),
+        kBarcode,
+        std::min(Data.size(), sizeof(kBarcode) - 1)
+    );
+    Cnt = 0;
+}
+
+void Hcv1000Cart::DoSavestate(melonDS::Savestate* file)
+{
+    CartCommon::DoSavestate(file);
+    file->Var8(&Cnt);
+    file->VarArray(Data.data(), Data.size());
+}
+
+melonDS::u16 Hcv1000Cart::ROMRead(melonDS::u32 addr) const
+{
+    addr &= 0x01FFFFFF;
+
+    if (addr >= 0x00020000)
+        return 0xFFFF;
+
+    const melonDS::u8 lo =
+        (addr & 1)
+        ? 0xFD
+        : melonDS::u8(0xF0 | ((addr & 0x1F) >> 1));
+
+    const melonDS::u32 next = addr + 1;
+
+    const melonDS::u8 hi =
+        (next & 1)
+        ? 0xFD
+        : melonDS::u8(0xF0 | ((next & 0x1F) >> 1));
+
+    return melonDS::u16(
+        lo | (melonDS::u16(hi) << 8)
+    );
+}
+
+void Hcv1000Cart::ROMWrite(
+    melonDS::u32,
+    melonDS::u16
+)
+{
+}
+
+melonDS::u8 Hcv1000Cart::SRAMRead(melonDS::u32 addr)
+{
+    addr &= 0xFFFF;
+
+    if (addr == 0x0000)
+        return Cnt;
+
+    if (addr >= 0x0010 && addr <= 0x001F)
+        return Data[addr - 0x0010];
+
+    return 0xFF;
+}
+
+void Hcv1000Cart::SRAMWrite(
+    melonDS::u32 addr,
+    melonDS::u8 val
+)
+{
+    addr &= 0xFFFF;
+
+    if (addr != 0x0000)
+        return;
+
+    const melonDS::u8 requested =
+        melonDS::u8(val & 0x83);
+
+    if (requested & 0x80)
+        Cnt = 0x11;
+    else
+        Cnt = requested & 0x01;
+}
+
+} // namespace MelonDsDs
+EOF
+
+          python3 - "$MELONDS/src/libretro/CMakeLists.txt" "$MELONDS/src/libretro/config/console.cpp" <<'PY'
           import sys
           from pathlib import Path
 
-          path = Path(sys.argv[1])
-          text = path.read_text()
+          cmake_path = Path(sys.argv[1])
+          console_path = Path(sys.argv[2])
 
-          anchor = (
-              "    auto* ndscart = NDSCartSlot.GetCart();\n"
-              "    if (!ndscart)\n"
-              "        return;\n"
-          )
+          cmake = cmake_path.read_text()
 
-          insert = (
-              "    // HCV-1000 Love & Berry DS Collection\n"
-              "    if (ndscart->GetHeader().GameCode[0] == 'A' &&\n"
-              "        ndscart->GetHeader().GameCode[1] == 'L' &&\n"
-              "        ndscart->GetHeader().GameCode[2] == 'B' &&\n"
-              "        ndscart->GetHeader().GameCode[3] == 'J')\n"
-              "    {\n"
-              "        GBACartSlot.SetCart(std::make_unique<GBACart::CartSegaCardReader>());\n"
-              "        ExMemCnt[0] = 0xE877;\n"
-              "        SetGBASlotTimings();\n"
-              "    }\n\n"
-          )
+          if "config/hcv1000.cpp" not in cmake:
+              anchor = "    config/parse.cpp"
 
-          if insert in text:
-              print("HCV-1000 code already present.")
-          elif anchor not in text:
-              print("NDS.cpp insertion point not found.")
-              sys.exit(1)
-          else:
-              text = text.replace(anchor, anchor + insert, 1)
-              path.write_text(text)
-              print("HCV-1000 startup code injected.")
+              if anchor not in cmake:
+                  raise SystemExit(
+                      "libretro CMakeLists.txt insertion point not found"
+                  )
+
+              cmake = cmake.replace(
+                  anchor,
+                  "    config/hcv1000.cpp\n"
+                  "    config/hcv1000.hpp\n"
+                  + anchor,
+                  1
+              )
+
+              cmake_path.write_text(cmake)
+
+          console = console_path.read_text()
+
+          if '#include "hcv1000.hpp"' not in console:
+              anchor = '#include "config.hpp"\n'
+
+              if anchor not in console:
+                  raise SystemExit(
+                      "console.cpp include insertion point not found"
+                  )
+
+              console = console.replace(
+                  anchor,
+                  anchor + '#include "hcv1000.hpp"\n',
+                  1
+              )
+
+          if "Installed built-in HCV-1000 for Love and Berry (ALBJ)" not in console:
+              anchor = "        switch (config.GetSlot2Device())"
+
+              if anchor not in console:
+                  raise SystemExit(
+                      "console.cpp Slot-2 insertion point not found"
+                  )
+
+              injection = """        if (ndsargs.ndsCart) {
+            const uint8_t* rom = ndsargs.ndsCart->GetROM();
+            const uint32_t romlen = ndsargs.ndsCart->GetROMLength();
+
+            if (rom &&
+                romlen >= 0x10 &&
+                std::string_view(
+                    reinterpret_cast<const char*>(rom + 0x0C),
+                    4
+                ) == "ALBJ")
+            {
+                ndsargs.gbaCart =
+                    std::make_unique<Hcv1000Cart>();
+
+                retro::debug(
+                    "Installed built-in HCV-1000 for Love and Berry (ALBJ)"
+                );
+            }
+        }
+
+        if (ndsargs.gbaCart) {
+            return ndsargs;
+        }
+"""
+
+              console = console.replace(
+                  anchor,
+                  injection + anchor,
+                  1
+              )
+
+          console_path.write_text(console)
+
+          print("HCV-1000 source injection complete.")
           PY
 
       - name: Build
@@ -134,8 +305,10 @@ jobs:
         shell: bash
         run: |
           set -e
+
           rm -rf artifact
           mkdir -p artifact
+
           cp -R build/. artifact/
 
           printf '%s\n' \
@@ -144,6 +317,7 @@ jobs:
             'Game: Oshare Majo Love and Berry: DS Collection' \
             'Game code: ALBJ' \
             'Default HCV-1000 card: 0UMLMHQ697D' \
+            'HCV-1000 implementation: built-in libretro Slot-2 device' \
             'This package contains the generated build.' \
             > artifact/README.txt
 
