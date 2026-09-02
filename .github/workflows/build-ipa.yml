@@ -11,9 +11,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 1. 成功済みHCV-1000コアを取得
-      # ============================================================
       - name: Download HCV-1000 iOS core
         uses: actions/download-artifact@v4
         with:
@@ -30,57 +27,59 @@ jobs:
           HCV_CORE="$(find hcv-core -type f -name 'melondsds_libretro.dylib' -print -quit)"
 
           if [ -z "$HCV_CORE" ]; then
-            echo "ERROR: melondsds_libretro.dylib not found"
-            find hcv-core -maxdepth 5 -type f -print
+            echo "ERROR: HCV-1000 core not found"
+            find hcv-core -type f -print
             exit 1
           fi
 
           echo "HCV_CORE=$HCV_CORE" >> "$GITHUB_ENV"
-          echo "Found HCV core:"
+
+          echo "Found:"
           file "$HCV_CORE"
-
-      # ============================================================
-      # 2. HCVコアのMach-O情報を確認
-      # ============================================================
-      - name: Verify HCV core
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "===== file ====="
-          file "$HCV_CORE"
-
-          echo "===== architectures ====="
           lipo -info "$HCV_CORE" || true
 
-          echo "===== load commands ====="
-          otool -l "$HCV_CORE" | grep -A8 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS|LC_VERSION_MIN_MACOSX' || true
-
-          echo "===== libretro symbols ====="
-          nm -gU "$HCV_CORE" | grep -E 'retro_init|retro_run|retro_load_game' | head -20 || true
-
-      # ============================================================
-      # 3. 公式Provenance NoExtensions IPA取得
-      # ============================================================
-      - name: Download official Provenance IPA
+      - name: Download current official Provenance IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          curl -L \
-            --fail \
+          API="https://api.github.com/repos/Provenance-Emu/Provenance/releases/latest"
+
+          echo "Getting latest Provenance release..."
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "$API" \
+            -o release.json
+
+          echo "Release assets:"
+          jq -r '.assets[] | "\(.name) \(.browser_download_url)"' release.json
+
+          IPA_URL="$(
+            jq -r '
+              .assets[]
+              | select(.name | test("Provenance-iOS.*\\.ipa$"; "i"))
+              | .browser_download_url
+            ' release.json | head -1
+          )"
+
+          if [ -z "$IPA_URL" ]; then
+            echo "ERROR: No iOS IPA found in latest Provenance release"
+            exit 1
+          fi
+
+          echo "IPA URL:"
+          echo "$IPA_URL"
+
+          curl -fL \
             --retry 3 \
             -o provenance.ipa \
-            https://github.com/Provenance-Emu/Provenance/releases/latest/download/Provenance-iOS-NoExtensions.ipa
+            "$IPA_URL"
 
           test -s provenance.ipa
 
-          echo "Official Provenance IPA:"
           ls -lh provenance.ipa
 
-      # ============================================================
-      # 4. IPA展開
-      # ============================================================
       - name: Unpack Provenance IPA
         shell: bash
         run: |
@@ -94,32 +93,32 @@ jobs:
           APP="$(find ipa/Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
 
           if [ -z "$APP" ]; then
-            echo "ERROR: Provenance.app not found"
+            echo "ERROR: Provenance app not found"
             find ipa/Payload -maxdepth 2 -print
             exit 1
           fi
 
           echo "APP=$APP" >> "$GITHUB_ENV"
-          echo "Provenance app:"
+
+          echo "App:"
           echo "$APP"
 
-      # ============================================================
-      # 5. 実際のProvenance melonDS frameworkを確認
-      # ============================================================
       - name: Locate Provenance melonDS framework
         shell: bash
         run: |
           set -euo pipefail
 
-          FRAMEWORK="$(find "$APP/Frameworks" \
-            -type f \
-            -path '*/melonds.libretro.framework/melonds.libretro' \
-            -print -quit)"
+          FRAMEWORK="$(
+            find "$APP/Frameworks" \
+              -type f \
+              -path '*/melonds.libretro.framework/melonds.libretro' \
+              -print -quit
+          )"
 
           if [ -z "$FRAMEWORK" ]; then
-            echo "ERROR: Provenance melonDS framework binary not found"
+            echo "ERROR: Provenance melonDS framework not found"
 
-            echo "===== Framework contents ====="
+            echo "Framework contents:"
             find "$APP/Frameworks" -maxdepth 4 -print | sort
 
             exit 1
@@ -130,61 +129,46 @@ jobs:
           echo "PROVENANCE_MELONDS=$FRAMEWORK" >> "$GITHUB_ENV"
           echo "PROVENANCE_MELONDS_DIR=$FRAMEWORK_DIR" >> "$GITHUB_ENV"
 
-          echo "Found Provenance melonDS:"
+          echo "Found:"
           echo "$FRAMEWORK"
 
           file "$FRAMEWORK"
+          lipo -info "$FRAMEWORK" || true
 
-      # ============================================================
-      # 6. 差し替え前に両方を確認
-      # ============================================================
-      - name: Verify replacement targets
+      - name: Verify replacement files
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== HCV core ====="
+          echo "===== HCV CORE ====="
           file "$HCV_CORE"
           lipo -info "$HCV_CORE" || true
 
           echo
-          echo "===== Provenance core ====="
+          echo "===== PROVENANCE CORE ====="
           file "$PROVENANCE_MELONDS"
           lipo -info "$PROVENANCE_MELONDS" || true
 
           echo
-          echo "===== Framework directory ====="
+          echo "===== TARGET DIRECTORY ====="
           ls -la "$PROVENANCE_MELONDS_DIR"
 
-          echo
-          echo "Both replacement files exist."
-
-      # ============================================================
-      # 7. HCV-1000コアをProvenance melonDSへ差し替え
-      # ============================================================
       - name: Replace Provenance melonDS core
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Replacing:"
-          echo "$PROVENANCE_MELONDS"
-
           cp "$HCV_CORE" "$PROVENANCE_MELONDS"
 
           chmod 755 "$PROVENANCE_MELONDS"
 
-          # 古い署名を削除
           rm -rf "$PROVENANCE_MELONDS_DIR/_CodeSignature"
 
-          echo "Replacement complete."
+          echo "Replacement completed."
 
           file "$PROVENANCE_MELONDS"
           lipo -info "$PROVENANCE_MELONDS" || true
 
-      # ============================================================
-      # 8. IPAを再パッケージ
-      # ============================================================
       - name: Repack IPA
         shell: bash
         run: |
@@ -193,21 +177,13 @@ jobs:
           rm -f HCV1000-LoveBerry-Provenance.ipa
 
           cd ipa
-
-          zip -qry \
-            ../HCV1000-LoveBerry-Provenance.ipa \
-            Payload
-
+          zip -qry ../HCV1000-LoveBerry-Provenance.ipa Payload
           cd ..
 
           test -s HCV1000-LoveBerry-Provenance.ipa
 
-          echo "Created IPA:"
           ls -lh HCV1000-LoveBerry-Provenance.ipa
 
-      # ============================================================
-      # 9. 完成IPAを最終検査
-      # ============================================================
       - name: Verify final IPA
         shell: bash
         run: |
@@ -218,36 +194,32 @@ jobs:
 
           unzip -q HCV1000-LoveBerry-Provenance.ipa -d verify
 
-          FINAL_CORE="$(find verify/Payload -type f \
-            -path '*/melonds.libretro.framework/melonds.libretro' \
-            -print -quit)"
+          FINAL_CORE="$(
+            find verify/Payload \
+              -type f \
+              -path '*/melonds.libretro.framework/melonds.libretro' \
+              -print -quit
+          )"
 
           if [ -z "$FINAL_CORE" ]; then
-            echo "ERROR: final IPA does not contain melonDS framework"
+            echo "ERROR: final melonDS core missing"
             exit 1
           fi
 
-          echo "===== FINAL CORE ====="
+          echo "FINAL CORE:"
           echo "$FINAL_CORE"
 
           file "$FINAL_CORE"
           lipo -info "$FINAL_CORE" || true
 
           echo
-          echo "===== FINAL FRAMEWORK ====="
-          ls -la "$(dirname "$FINAL_CORE")"
-
-          echo
-          echo "===== IPA CONTENT CHECK ====="
+          echo "IPA CONTENT:"
           unzip -l HCV1000-LoveBerry-Provenance.ipa \
             | grep 'melonds.libretro.framework/melonds.libretro'
 
           echo
           echo "FINAL IPA VERIFICATION PASSED."
 
-      # ============================================================
-      # 10. IPAをArtifactとして保存
-      # ============================================================
       - name: Upload final IPA
         uses: actions/upload-artifact@v4
         with:
