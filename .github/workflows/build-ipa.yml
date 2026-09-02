@@ -36,7 +36,7 @@ jobs:
       - name: Download completed HCV-1000 iOS core
         uses: actions/download-artifact@v4
         with:
-          name: HCV1000-LoveBerry-iOS-arm64
+          name: HCV1000-LoveBerry-iOS-core
           path: hcvcore
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -59,6 +59,7 @@ jobs:
           fi
 
           echo "HCV_DYLIB=$PWD/$DYLIB" >> "$GITHUB_ENV"
+
           echo "Found HCV-1000 core:"
           file "$DYLIB"
           lipo -info "$DYLIB"
@@ -112,6 +113,16 @@ jobs:
             PVLookup/Scripts/generate_cheatdb_if_needed.sh
           fi
 
+      - name: Verify Provenance scheme
+        working-directory: provenance
+        shell: bash
+        run: |
+          set -e
+
+          xcodebuild \
+            -workspace Provenance.xcworkspace \
+            -list
+
       - name: Build Provenance iOS archive
         working-directory: provenance
         shell: bash
@@ -122,7 +133,7 @@ jobs:
 
           xcodebuild \
             -workspace Provenance.xcworkspace \
-            -scheme "Provenance (AppStore) (Release)" \
+            -scheme "Provenance (AppStore)" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -configuration Release \
@@ -149,7 +160,11 @@ jobs:
 
           if [ -z "$APP" ]; then
             echo "::error::Provenance.app was not found in archive."
-            find build/Provenance.xcarchive -maxdepth 5 -type d -name '*.app' -print || true
+            find build/Provenance.xcarchive \
+              -maxdepth 5 \
+              -type d \
+              -name '*.app' \
+              -print || true
             exit 1
           fi
 
@@ -170,7 +185,10 @@ jobs:
 
           if [ -z "$FOUND" ]; then
             echo "::error::HCV-1000 melondsds_libretro.dylib is not inside the final app."
-            find "$APP" -type f -name '*.dylib' -print | head -100
+            find "$APP" \
+              -type f \
+              -name '*.dylib' \
+              -print | head -100
             exit 1
           fi
 
@@ -201,7 +219,7 @@ jobs:
         run: |
           set -e
 
-          rm -rf IPA Payload
+          rm -rf IPA
 
           mkdir -p IPA/Payload
 
