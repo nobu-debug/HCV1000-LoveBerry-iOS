@@ -18,7 +18,6 @@ jobs:
         shell: bash
         run: |
           set -e
-
           ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
@@ -36,98 +35,116 @@ jobs:
 
           rm -rf source
           mkdir -p source
+
           unzip -q "$ZIP" -d source
 
-      - name: Prepare FetchDependencies
+          test -f source/finalpkg/CMakeLists.txt
+          test -f source/finalpkg/cmake/FetchDependencies.cmake
+
+          echo "Source extracted successfully."
+
+      - name: Replace FetchDependencies
         shell: bash
         run: |
           set -e
 
-          FILE="source/finalpkg/cmake/FetchDependencies.cmake"
-          PATCH="${GITHUB_WORKSPACE}/source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+          cat > source/finalpkg/cmake/FetchDependencies.cmake <<'CMAKE'
+          include(FetchContent)
 
-          if [ ! -f "$FILE" ]; then
-            echo "FetchDependencies.cmake not found"
-            exit 1
-          fi
-
-          if [ ! -f "$PATCH" ]; then
-            echo "HCV-1000 patch not found"
-            exit 1
-          fi
-
-          cat > "$FILE" <<'CMAKE'
           macro(define_git_dependency_vars name default_url default_tag)
-              string(TOUPPER ${name} VAR_NAME)
-              string(MAKE_C_IDENTIFIER ${VAR_NAME} VAR_NAME)
-
-              if (NOT ${VAR_NAME}_REPOSITORY_URL)
-                  set(
-                      "${VAR_NAME}_REPOSITORY_URL"
-                      "${default_url}"
-                      CACHE STRING
-                      "${name} repository URL. Set this to use a fork."
-                      FORCE
-                  )
-              endif()
-
-              if (NOT ${VAR_NAME}_REPOSITORY_TAG)
-                  set(
-                      "${VAR_NAME}_REPOSITORY_TAG"
-                      "${default_tag}"
-                      CACHE STRING
-                      "${name} repository commit hash or tag. Set this when using a new version or a custom branch."
-                      FORCE
-                  )
-              endif()
+              string(TOLOWER "${name}" name_lower)
+              set(FETCHCONTENT_SOURCE_DIR_${name_lower} "" CACHE PATH "")
+              set(FETCHCONTENT_UPDATES_DISCONNECTED_${name_lower} OFF CACHE BOOL "")
+              set(FETCHCONTENT_FULLY_DISCONNECTED OFF CACHE BOOL "")
+              set(${name}_URL "${default_url}" CACHE STRING "")
+              set(${name}_TAG "${default_tag}" CACHE STRING "")
           endmacro()
 
           function(fetch_dependency name default_url default_tag)
-              define_git_dependency_vars(${name} ${default_url} ${default_tag})
-
-              if (FETCHCONTENT_SOURCE_DIR_${VAR_NAME})
-                  message(STATUS "Using ${name}: ${FETCHCONTENT_SOURCE_DIR_${VAR_NAME}} (local)")
-              else()
-                  message(STATUS "Using ${name}: ${${VAR_NAME}_REPOSITORY_URL} (ref ${${VAR_NAME}_REPOSITORY_TAG})")
-              endif()
+              define_git_dependency_vars(
+                  "${name}"
+                  "${default_url}"
+                  "${default_tag}"
+              )
 
               FetchContent_Declare(
                   ${name}
-                  GIT_REPOSITORY "${${VAR_NAME}_REPOSITORY_URL}"
-                  GIT_TAG "${${VAR_NAME}_REPOSITORY_TAG}"
+                  GIT_REPOSITORY "${${name}_URL}"
+                  GIT_TAG "${${name}_TAG}"
+                  GIT_SHALLOW TRUE
               )
-
-              FetchContent_GetProperties(${name})
           endfunction()
 
-          fetch_dependency(melonDS "https://github.com/melonDS-emu/melonDS" "7117178")
-          fetch_dependency(libretro-common "https://github.com/libretro/libretro-common" "ad9124f")
-          fetch_dependency("embed-binaries" "https://github.com/andoalon/embed-binaries" "078b62b")
-          fetch_dependency(glm "https://github.com/g-truc/glm" "e7970a8")
-          fetch_dependency(libslirp "https://github.com/JesseTG/libslirp-mirror" "e61dbd4")
-          fetch_dependency(pntr "https://github.com/robloach/pntr" "922aed0")
-          fetch_dependency(fmt "https://github.com/fmtlib/fmt" "11.2.0")
-          fetch_dependency(yamc "https://github.com/yohhoy/yamc" "4e015a7")
-          fetch_dependency(span-lite "https://github.com/martinmoene/span-lite" "00afc28")
-          fetch_dependency(date "https://github.com/HowardHinnant/date" "1ead671")
-
-          fetch_dependency(zlib "https://github.com/madler/zlib" "v1.3.1")
-
-          if (TRACY_ENABLE)
-              fetch_dependency(tracy "https://github.com/wolfpld/tracy" "v0.11.1")
-          endif()
-
-          set(
-              CMAKE_MODULE_PATH
-              "${FETCHCONTENT_BASE_DIR}/melonds-src/cmake"
-              "${FETCHCONTENT_BASE_DIR}/embed-binaries-src/cmake"
-              "${CMAKE_MODULE_PATH}"
+          fetch_dependency(
+              melonDS
+              "https://github.com/melonDS-emu/melonDS"
+              "7117178"
           )
 
-          set(BUILD_STATIC ON)
-          set(BUILD_STATIC_LIBS ON)
-          set(BUILD_QT_SDL OFF)
-          set(ENABLE_GDBSTUB OFF)
+          fetch_dependency(
+              libretro-common
+              "https://github.com/libretro/libretro-common"
+              "ad9124f"
+          )
+
+          fetch_dependency(
+              embed-binaries
+              "https://github.com/andoalon/embed-binaries"
+              "078b62b"
+          )
+
+          fetch_dependency(
+              glm
+              "https://github.com/g-truc/glm"
+              "e7970a8"
+          )
+
+          fetch_dependency(
+              libslirp
+              "https://github.com/JesseTG/libslirp-mirror"
+              "e61dbd4"
+          )
+
+          fetch_dependency(
+              pntr
+              "https://github.com/robloach/pntr"
+              "922aed0"
+          )
+
+          fetch_dependency(
+              fmt
+              "https://github.com/fmtlib/fmt"
+              "11.2.0"
+          )
+
+          fetch_dependency(
+              yamc
+              "https://github.com/yohhoy/yamc"
+              "4e015a7"
+          )
+
+          fetch_dependency(
+              span-lite
+              "https://github.com/martinmoene/span-lite"
+              "00afc28"
+          )
+
+          fetch_dependency(
+              date
+              "https://github.com/HowardHinnant/date"
+              "1ead671"
+          )
+
+          fetch_dependency(
+              zlib
+              "https://github.com/madler/zlib"
+              "v1.3.1"
+          )
+
+          set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+          set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+          set(BUILD_QT_SDL OFF CACHE BOOL "" FORCE)
+          set(ENABLE_GDBSTUB OFF CACHE BOOL "" FORCE)
 
           set(GLM_BUILD_LIBRARY ON CACHE BOOL "" FORCE)
           set(GLM_ENABLE_CXX_17 ON CACHE BOOL "" FORCE)
@@ -140,20 +157,41 @@ jobs:
               set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
           endif()
 
-          message(STATUS "Fetching melonDS source before configuration.")
-
+          #
+          # Populate melonDS first.
+          #
           FetchContent_Populate(melonDS)
 
-          if (NOT EXISTS "${melonDS_SOURCE_DIR}/CMakeLists.txt")
-              message(FATAL_ERROR "melonDS source was not populated correctly.")
+          #
+          # IMPORTANT:
+          # FetchContent normalizes the dependency name to lowercase
+          # for the generated source/binary directory variables.
+          #
+          FetchContent_GetProperties(melonDS)
+
+          if (NOT melonDS_POPULATED)
+              message(FATAL_ERROR
+                  "melonDS was not populated by FetchContent."
+              )
           endif()
 
-          message(STATUS "melonDS source: ${melonDS_SOURCE_DIR}")
+          if (NOT EXISTS "${melonds_SOURCE_DIR}/CMakeLists.txt")
+              message(FATAL_ERROR
+                  "melonDS CMakeLists.txt was not found at: ${melonds_SOURCE_DIR}"
+              )
+          endif()
 
+          message(STATUS "melonDS source: ${melonds_SOURCE_DIR}")
+          message(STATUS "melonDS binary: ${melonds_BINARY_DIR}")
+
+          #
+          # Apply the HCV-1000 patch BEFORE melonDS is added to the
+          # parent project.
+          #
           execute_process(
               COMMAND
                   "${GIT_EXECUTABLE}"
-                  -C "${melonDS_SOURCE_DIR}"
+                  -C "${melonds_SOURCE_DIR}"
                   apply
                   --whitespace=nowarn
                   --exclude=src/NDS.cpp
@@ -164,18 +202,21 @@ jobs:
           )
 
           if (NOT HCV_PATCH_RESULT EQUAL 0)
+              message(STATUS "HCV patch stdout:")
               message(STATUS "${HCV_PATCH_STDOUT}")
+              message(STATUS "HCV patch stderr:")
               message(STATUS "${HCV_PATCH_STDERR}")
-              message(FATAL_ERROR "Failed to apply HCV-1000 patch to melonDS.")
+
+              message(FATAL_ERROR
+                  "Failed to apply HCV-1000 patch to melonDS."
+              )
           endif()
 
           message(STATUS "HCV-1000 patch applied successfully.")
 
-          add_subdirectory(
-              "${melonDS_SOURCE_DIR}"
-              "${melonDS_BINARY_DIR}"
-          )
-
+          #
+          # Populate the supporting dependencies.
+          #
           FetchContent_MakeAvailable(
               libretro-common
               embed-binaries
@@ -189,17 +230,36 @@ jobs:
               date
           )
 
-          if (TRACY_ENABLE)
-              set(BUILD_SHARED_LIBS OFF)
-              option(TRACY_DELAYED_INIT "" ON)
-              option(TRACY_MANUAL_LIFETIME "" ON)
-              option(TRACY_ON_DEMAND "" ON)
-              option(TRACY_STATIC "" ON)
-              FetchContent_MakeAvailable(tracy)
-          endif()
+          #
+          # Now configure melonDS itself.
+          # This creates the 'core' target expected by
+          # ConfigureDependencies.cmake and src/libretro.
+          #
+          add_subdirectory(
+              "${melonds_SOURCE_DIR}"
+              "${melonds_BINARY_DIR}"
+          )
+
+          message(STATUS "melonDS dependency configured successfully.")
           CMAKE
 
-          echo "FetchDependencies.cmake replaced with controlled melonDS/HCV build flow."
+          echo "FetchDependencies.cmake replaced successfully."
+          sed -n '1,260p' source/finalpkg/cmake/FetchDependencies.cmake
+
+      - name: Locate CMake project
+        shell: bash
+        run: |
+          set -e
+
+          CMAKE_DIR=$(find source -name CMakeLists.txt -type f -print | grep '/finalpkg/CMakeLists.txt$' | head -n 1 | xargs -I{} dirname "{}")
+
+          if [ -z "$CMAKE_DIR" ]; then
+            echo "finalpkg CMakeLists.txt not found"
+            exit 1
+          fi
+
+          echo "CMAKE_DIR=$CMAKE_DIR" >> "$GITHUB_ENV"
+          echo "Using: $CMAKE_DIR"
 
       - name: Configure
         shell: bash
@@ -209,10 +269,30 @@ jobs:
           rm -rf build
 
           cmake \
-            -S source/finalpkg \
+            -S "$CMAKE_DIR" \
             -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
+
+      - name: Verify HCV-1000 changes
+        shell: bash
+        run: |
+          set -e
+
+          NDS=$(find build -path "*/melonds-src/src/NDS.cpp" -type f -print -quit)
+
+          if [ -z "$NDS" ]; then
+            echo "melonDS NDS.cpp was not found."
+            exit 1
+          fi
+
+          MELONDS_ROOT=$(dirname "$(dirname "$NDS")")
+
+          test -f "$MELONDS_ROOT/src/libretro/config/hcv1000.cpp"
+          test -f "$MELONDS_ROOT/src/libretro/config/hcv1000.hpp"
+
+          echo "HCV-1000 source files verified."
+          echo "melonDS root: $MELONDS_ROOT"
 
       - name: Build
         shell: bash
@@ -237,7 +317,7 @@ jobs:
             'Game: Oshare Majo Love and Berry: DS Collection' \
             'Game code: ALBJ' \
             'Default HCV-1000 card: 0UMLMHQ697D' \
-            'HCV-1000 implementation: libretro Slot-2 device' \
+            'This package contains the generated build.' \
             > artifact/README.txt
 
       - name: Upload iOS core
