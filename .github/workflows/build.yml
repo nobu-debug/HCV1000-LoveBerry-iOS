@@ -18,6 +18,7 @@ jobs:
         shell: bash
         run: |
           set -e
+
           ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
@@ -53,9 +54,11 @@ jobs:
 
           macro(define_git_dependency_vars name default_url default_tag)
               string(TOLOWER "${name}" name_lower)
+
               set(FETCHCONTENT_SOURCE_DIR_${name_lower} "" CACHE PATH "")
               set(FETCHCONTENT_UPDATES_DISCONNECTED_${name_lower} OFF CACHE BOOL "")
               set(FETCHCONTENT_FULLY_DISCONNECTED OFF CACHE BOOL "")
+
               set(${name}_URL "${default_url}" CACHE STRING "")
               set(${name}_TAG "${default_tag}" CACHE STRING "")
           endmacro()
@@ -71,14 +74,14 @@ jobs:
                   ${name}
                   GIT_REPOSITORY "${${name}_URL}"
                   GIT_TAG "${${name}_TAG}"
-                  GIT_SHALLOW TRUE
+                  GIT_SHALLOW FALSE
               )
           endfunction()
 
           fetch_dependency(
               melonDS
               "https://github.com/melonDS-emu/melonDS"
-              "7117178"
+              "7117178c2dd56df32b6534ba6a54ad1f8547e693"
           )
 
           fetch_dependency(
@@ -157,16 +160,8 @@ jobs:
               set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
           endif()
 
-          #
-          # Populate melonDS first.
-          #
           FetchContent_Populate(melonDS)
 
-          #
-          # IMPORTANT:
-          # FetchContent normalizes the dependency name to lowercase
-          # for the generated source/binary directory variables.
-          #
           FetchContent_GetProperties(melonDS)
 
           if (NOT melonDS_POPULATED)
@@ -184,10 +179,6 @@ jobs:
           message(STATUS "melonDS source: ${melonds_SOURCE_DIR}")
           message(STATUS "melonDS binary: ${melonds_BINARY_DIR}")
 
-          #
-          # Apply the HCV-1000 patch BEFORE melonDS is added to the
-          # parent project.
-          #
           execute_process(
               COMMAND
                   "${GIT_EXECUTABLE}"
@@ -214,9 +205,6 @@ jobs:
 
           message(STATUS "HCV-1000 patch applied successfully.")
 
-          #
-          # Populate the supporting dependencies.
-          #
           FetchContent_MakeAvailable(
               libretro-common
               embed-binaries
@@ -230,11 +218,6 @@ jobs:
               date
           )
 
-          #
-          # Now configure melonDS itself.
-          # This creates the 'core' target expected by
-          # ConfigureDependencies.cmake and src/libretro.
-          #
           add_subdirectory(
               "${melonds_SOURCE_DIR}"
               "${melonds_BINARY_DIR}"
@@ -244,7 +227,6 @@ jobs:
           CMAKE
 
           echo "FetchDependencies.cmake replaced successfully."
-          sed -n '1,260p' source/finalpkg/cmake/FetchDependencies.cmake
 
       - name: Locate CMake project
         shell: bash
