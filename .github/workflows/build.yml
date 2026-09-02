@@ -76,9 +76,6 @@ jobs:
               )
           endfunction()
 
-          #
-          # Supporting dependencies
-          #
           fetch_dependency(
               libretro-common
               "https://github.com/libretro/libretro-common"
@@ -139,9 +136,6 @@ jobs:
               "v1.3.1"
           )
 
-          #
-          # Build settings
-          #
           set(BUILD_STATIC ON CACHE BOOL "" FORCE)
           set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
           set(BUILD_QT_SDL OFF CACHE BOOL "" FORCE)
@@ -159,12 +153,7 @@ jobs:
           endif()
 
           #
-          # ------------------------------------------------------------
           # melonDS
-          # ------------------------------------------------------------
-          #
-          # Do NOT use FetchContent for melonDS.
-          # Clone the exact upstream commit directly.
           #
           set(MELONDS_SOURCE_DIR
               "${CMAKE_BINARY_DIR}/_deps/melonds-src"
@@ -183,7 +172,6 @@ jobs:
           )
 
           if (EXISTS "${MELONDS_SOURCE_DIR}/.git")
-              message(STATUS "Removing previous melonDS checkout.")
               file(REMOVE_RECURSE "${MELONDS_SOURCE_DIR}")
           endif()
 
@@ -205,10 +193,7 @@ jobs:
           if (NOT MELONDS_CLONE_RESULT EQUAL 0)
               message(STATUS "${MELONDS_CLONE_STDOUT}")
               message(STATUS "${MELONDS_CLONE_STDERR}")
-
-              message(FATAL_ERROR
-                  "Failed to clone melonDS."
-              )
+              message(FATAL_ERROR "Failed to clone melonDS.")
           endif()
 
           execute_process(
@@ -225,7 +210,6 @@ jobs:
           if (NOT MELONDS_CHECKOUT_RESULT EQUAL 0)
               message(STATUS "${MELONDS_CHECKOUT_STDOUT}")
               message(STATUS "${MELONDS_CHECKOUT_STDERR}")
-
               message(FATAL_ERROR
                   "Failed to checkout melonDS commit ${MELONDS_COMMIT}."
               )
@@ -239,14 +223,6 @@ jobs:
               )
           endif()
 
-          message(STATUS
-              "melonDS source: ${MELONDS_SOURCE_DIR}"
-          )
-
-          #
-          # Make the variable names expected by the finalpkg
-          # attribution/configuration files available.
-          #
           set(melonds_SOURCE_DIR
               "${MELONDS_SOURCE_DIR}"
               CACHE PATH "" FORCE
@@ -268,12 +244,7 @@ jobs:
           )
 
           #
-          # ------------------------------------------------------------
           # HCV-1000 patch
-          # ------------------------------------------------------------
-          #
-          # The supplied patch contains an incompatible NDS.cpp hunk.
-          # Apply every other patch section directly to melonDS.
           #
           execute_process(
               COMMAND
@@ -289,35 +260,21 @@ jobs:
           )
 
           if (NOT HCV_PATCH_RESULT EQUAL 0)
-              message(STATUS
-                  "HCV patch stdout:"
-              )
+              message(STATUS "HCV patch stdout:")
+              message(STATUS "${HCV_PATCH_STDOUT}")
 
-              message(STATUS
-                  "${HCV_PATCH_STDOUT}"
-              )
-
-              message(STATUS
-                  "HCV patch stderr:"
-              )
-
-              message(STATUS
-                  "${HCV_PATCH_STDERR}"
-              )
+              message(STATUS "HCV patch stderr:")
+              message(STATUS "${HCV_PATCH_STDERR}")
 
               message(FATAL_ERROR
                   "Failed to apply HCV-1000 patch to melonDS."
               )
           endif()
 
-          message(STATUS
-              "HCV-1000 patch applied successfully."
-          )
+          message(STATUS "HCV-1000 patch applied successfully.")
 
           #
-          # ------------------------------------------------------------
           # Supporting dependencies
-          # ------------------------------------------------------------
           #
           FetchContent_MakeAvailable(
               libretro-common
@@ -333,11 +290,18 @@ jobs:
           )
 
           #
-          # ------------------------------------------------------------
-          # Add melonDS itself.
+          # IMPORTANT:
+          # melonDS DS v1.3.1 requires its own CMake modules
+          # and the embed-binaries CMake module.
           #
-          # This is the point where the 'core' target is created.
-          # ------------------------------------------------------------
+          set(CMAKE_MODULE_PATH
+              "${MELONDS_SOURCE_DIR}/cmake"
+              "${FETCHCONTENT_BASE_DIR}/embed-binaries-src/cmake"
+              "${CMAKE_MODULE_PATH}"
+          )
+
+          #
+          # Add melonDS itself.
           #
           add_subdirectory(
               "${MELONDS_SOURCE_DIR}"
