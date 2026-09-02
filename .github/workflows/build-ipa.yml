@@ -8,231 +8,222 @@ permissions:
   actions: read
 
 jobs:
-  build-ipa:
-    name: Build iOS IPA with HCV-1000 melonDS
+  package:
     runs-on: macos-26
-    timeout-minutes: 180
 
     steps:
-      - name: Checkout project
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Checkout Provenance
-        uses: actions/checkout@v4
-        with:
-          repository: Provenance-Emu/Provenance
-          ref: develop
-          path: provenance
-          submodules: false
-          fetch-depth: 1
-
-      - name: Initialize Provenance submodules
-        working-directory: provenance
-        run: |
-          set -e
-          git submodule sync --recursive
-          git submodule update --init --recursive --depth 1 --jobs 4
-
-      - name: Download completed HCV-1000 iOS core
+      - name: Download successful HCV-1000 iOS core
         uses: actions/download-artifact@v4
         with:
           name: HCV1000-LoveBerry-iOS-core
-          path: hcvcore
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           run-id: 33619073086
+          path: hcv-core
 
-      - name: Locate HCV-1000 dylib
+      - name: Locate HCV-1000 melonDS dylib
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          DYLIB=$(find hcvcore \
+          rm -rf hcv-unpack
+          mkdir -p hcv-unpack
+
+          HCV_DYLIB="$(find hcv-core -type f -name 'melondsds_libretro.dylib' -print -quit || true)"
+
+          if [ -z "$HCV_DYLIB" ]; then
+            CORE_ZIP="$(find hcv-core -type f -name '*.zip' -print -quit || true)"
+
+            if [ -z "$CORE_ZIP" ]; then
+              echo "ERROR: HCV-1000 dylib or ZIP was not found."
+              find hcv-core -maxdepth 5 -type f | head -200
+              exit 1
+            fi
+
+            echo "Unpacking core ZIP: $CORE_ZIP"
+            unzip -q "$CORE_ZIP" -d hcv-unpack
+
+            HCV_DYLIB="$(find hcv-unpack -type f -name 'melondsds_libretro.dylib' -print -quit || true)"
+          fi
+
+          if [ -z "$HCV_DYLIB" ]; then
+            echo "ERROR: melondsds_libretro.dylib was not found."
+            find hcv-core hcv-unpack -maxdepth 6 -type f | head -300
+            exit 1
+          fi
+
+          echo "HCV_DYLIB=$PWD/$HCV_DYLIB" >> "$GITHUB_ENV"
+
+          echo "Found HCV-1000 core:"
+          file "$HCV_DYLIB"
+
+      - name: Download official Provenance iOS NoExtensions IPA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ASSET_URL="$(gh api \
+            repos/Provenance-Emu/Provenance/releases/tags/alpha \
+            --jq '.assets[] | select(.name=="Provenance-iOS-NoExtensions.ipa") | .browser_download_url')"
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "ERROR: Official Provenance NoExtensions IPA was not found."
+            exit 1
+          fi
+
+          echo "Downloading official Provenance IPA..."
+
+          curl -L \
+            --fail \
+            --retry 3 \
+            --retry-all-errors \
+            -o Provenance-iOS-NoExtensions.ipa \
+            "$ASSET_URL"
+
+          ls -lh Provenance-iOS-NoExtensions.ipa
+
+      - name: Unpack official Provenance IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf ipa-work
+          mkdir -p ipa-work
+
+          unzip -q Provenance-iOS-NoExtensions.ipa -d ipa-work
+
+          APP_PATH="$(find ipa-work/Payload -maxdepth 1 -type d -name 'Provenance*.app' -print -quit || true)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Provenance.app was not found."
+            find ipa-work/Payload -maxdepth 2 -print | head -200
+            exit 1
+          fi
+
+          echo "APP_PATH=$PWD/$APP_PATH" >> "$GITHUB_ENV"
+
+          echo "Provenance app:"
+          echo "$APP_PATH"
+
+      - name: Verify official Provenance contains melonDS core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLED_DYLIB="$(find "$APP_PATH" \
             -type f \
             -name 'melondsds_libretro.dylib' \
-            -print | head -n 1)
+            -print -quit || true)"
 
-          if [ -z "$DYLIB" ]; then
-            echo "::error::HCV-1000 melondsds_libretro.dylib was not found."
-            find hcvcore -maxdepth 5 -type f | head -100
+          if [ -z "$BUNDLED_DYLIB" ]; then
+            echo "ERROR: Official Provenance IPA does not contain melondsds_libretro.dylib."
+
+            echo "Possible libretro files:"
+            find "$APP_PATH" -type f \
+              \( -name '*melonds*' -o -name '*libretro*' \) \
+              -print | head -200
+
             exit 1
           fi
 
-          echo "HCV_DYLIB=$PWD/$DYLIB" >> "$GITHUB_ENV"
+          echo "BUNDLED_DYLIB=$BUNDLED_DYLIB" >> "$GITHUB_ENV"
 
-          file "$DYLIB"
-          lipo -info "$DYLIB"
+          echo "Original Provenance melonDS core:"
+          file "$BUNDLED_DYLIB"
 
-      - name: Install build tools
-        run: |
-          set -e
-          brew install ldid xcbeautify 2>/dev/null || true
-
-      - name: Protect and install HCV-1000 core
-        working-directory: provenance
+      - name: Verify HCV-1000 core before replacement
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          MODULES="$PWD/CoresRetro/RetroArch/modules"
+          echo "HCV-1000 core:"
+          file "$HCV_DYLIB"
 
-          mkdir -p "$MODULES"
+          echo "Mach-O header:"
+          otool -hv "$HCV_DYLIB"
 
-          cp "$HCV_DYLIB" \
-            "$MODULES/melondsds_libretro.dylib"
+          echo "Build version:"
+          otool -l "$HCV_DYLIB" | grep -A5 -m1 LC_BUILD_VERSION || true
 
-          touch "$MODULES/melondsds_libretro.dylib.local"
-
-          ls -lh "$MODULES/melondsds_libretro.dylib"
-          file "$MODULES/melondsds_libretro.dylib"
-
-      - name: Verify HCV-1000 core is protected
-        working-directory: provenance
+      - name: Replace Provenance melonDS core
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          MODULES="$PWD/CoresRetro/RetroArch/modules"
+          echo "Replacing:"
+          echo "$BUNDLED_DYLIB"
 
-          test -f "$MODULES/melondsds_libretro.dylib"
-          test -f "$MODULES/melondsds_libretro.dylib.local"
+          cp "$HCV_DYLIB" "$BUNDLED_DYLIB"
+          chmod 755 "$BUNDLED_DYLIB"
 
-      - name: Generate required Provenance data
-        working-directory: provenance
+          echo "Replacement completed."
+
+      - name: Verify final HCV-1000 iOS core
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ -x "PVLookup/Scripts/generate_cheatdb_if_needed.sh" ]; then
-            PVLookup/Scripts/generate_cheatdb_if_needed.sh
-          fi
+          echo "Final dylib:"
+          file "$BUNDLED_DYLIB"
 
-      - name: Verify Provenance scheme
-        working-directory: provenance
-        shell: bash
-        run: |
-          set -e
+          echo "Mach-O header:"
+          otool -hv "$BUNDLED_DYLIB"
 
-          xcodebuild \
-            -workspace Provenance.xcworkspace \
-            -list
+          echo "Build version:"
+          PLATFORM_INFO="$(otool -l "$BUNDLED_DYLIB" | grep -A5 -m1 LC_BUILD_VERSION || true)"
+          echo "$PLATFORM_INFO"
 
-      - name: Build Provenance iOS archive
-        working-directory: provenance
-        shell: bash
-        run: |
-          set -o pipefail
-
-          mkdir -p build
-
-          xcodebuild \
-            -workspace Provenance.xcworkspace \
-            -scheme "Provenance (AppStore)" \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -configuration Release \
-            -archivePath "$PWD/build/Provenance.xcarchive" \
-            archive \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            SKIP_INSTALL=NO \
-            SWIFT_PACKAGE_ALLOW_WRITING_TO_DIRECTORY="$PWD" \
-            2>&1 | tee "$PWD/build/xcodebuild.log" | xcbeautify
-
-          test -d "$PWD/build/Provenance.xcarchive"
-
-      - name: Verify archived app
-        working-directory: provenance
-        shell: bash
-        run: |
-          set -e
-
-          APP=$(find build/Provenance.xcarchive \
-            -type d \
-            -name 'Provenance.app' \
-            -print | head -n 1)
-
-          if [ -z "$APP" ]; then
-            echo "::error::Provenance.app was not found in archive."
+          if ! otool -hv "$BUNDLED_DYLIB" | grep -q 'ARM64'; then
+            echo "ERROR: Final dylib is not ARM64."
             exit 1
           fi
 
-          echo "APP=$PWD/$APP" >> "$GITHUB_ENV"
-
-      - name: Verify HCV-1000 core inside archive
-        shell: bash
-        run: |
-          set -e
-
-          FOUND=$(find "$APP" \
-            -type f \
-            -name 'melondsds_libretro.dylib' \
-            -print | head -n 1)
-
-          if [ -z "$FOUND" ]; then
-            echo "::error::HCV-1000 core is not inside the final app."
+          if ! echo "$PLATFORM_INFO" | grep -qE 'platform (2|IOS)'; then
+            echo "ERROR: Final dylib is not identified as iOS."
             exit 1
           fi
 
-          file "$FOUND"
-          lipo -info "$FOUND"
+          echo "HCV-1000 iOS ARM64 core verification passed."
 
-      - name: Fakesign main application
-        working-directory: provenance
+      - name: Repack IPA
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          APP_BINARY="$APP/Provenance"
-          ENTITLEMENTS="$PWD/Provenance/Provenance-AppStore.entitlements"
+          rm -f HCV1000-LoveBerry-Provenance-iOS.ipa
 
-          if [ -f "$ENTITLEMENTS" ]; then
-            ldid -S"$ENTITLEMENTS" "$APP_BINARY" || true
-          else
-            ldid -S "$APP_BINARY" || true
-          fi
-
-      - name: Create IPA
-        working-directory: provenance
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf IPA
-          mkdir -p IPA/Payload
-
-          cp -pR \
-            "$APP" \
-            "IPA/Payload/Provenance.app"
-
-          cd IPA
-
-          zip -qr \
-            "../HCV1000-LoveBerry-Provenance-iOS.ipa" \
-            Payload
-
-          cd ..
-
-          test -f HCV1000-LoveBerry-Provenance-iOS.ipa
+          (
+            cd ipa-work
+            zip -qry \
+              ../HCV1000-LoveBerry-Provenance-iOS.ipa \
+              Payload
+          )
 
           ls -lh HCV1000-LoveBerry-Provenance-iOS.ipa
 
-      - name: Upload IPA
+      - name: Verify final IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking final IPA..."
+
+          unzip -l HCV1000-LoveBerry-Provenance-iOS.ipa \
+            | grep 'melondsds_libretro.dylib'
+
+          test -s HCV1000-LoveBerry-Provenance-iOS.ipa
+
+          echo "Final IPA verification passed."
+
+      - name: Upload finished IPA
         uses: actions/upload-artifact@v4
         with:
           name: HCV1000-LoveBerry-Provenance-iOS-IPA
-          path: provenance/HCV1000-LoveBerry-Provenance-iOS.ipa
+          path: HCV1000-LoveBerry-Provenance-iOS.ipa
           if-no-files-found: error
-          retention-days: 90
-
-      - name: Upload build log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: HCV1000-LoveBerry-Provenance-build-log
-          path: provenance/build/xcodebuild.log
-          if-no-files-found: warn
           retention-days: 7
