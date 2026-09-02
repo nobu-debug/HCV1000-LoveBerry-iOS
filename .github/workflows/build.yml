@@ -41,6 +41,7 @@ jobs:
 
           test -f source/finalpkg/CMakeLists.txt
           test -f source/finalpkg/cmake/FetchDependencies.cmake
+          test -f source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch
 
           echo "Source extracted successfully."
 
@@ -51,13 +52,10 @@ jobs:
 
           cat > source/finalpkg/cmake/FetchDependencies.cmake <<'CMAKE'
           include(FetchContent)
+          find_package(Git REQUIRED)
 
           macro(define_git_dependency_vars name default_url default_tag)
               string(TOLOWER "${name}" name_lower)
-
-              set(FETCHCONTENT_SOURCE_DIR_${name_lower} "" CACHE PATH "")
-              set(FETCHCONTENT_UPDATES_DISCONNECTED_${name_lower} OFF CACHE BOOL "")
-              set(FETCHCONTENT_FULLY_DISCONNECTED OFF CACHE BOOL "")
 
               set(${name}_URL "${default_url}" CACHE STRING "")
               set(${name}_TAG "${default_tag}" CACHE STRING "")
@@ -78,12 +76,9 @@ jobs:
               )
           endfunction()
 
-          fetch_dependency(
-              melonDS
-              "https://github.com/melonDS-emu/melonDS"
-              "7117178c2dd56df32b6534ba6a54ad1f8547e693"
-          )
-
+          #
+          # Supporting dependencies
+          #
           fetch_dependency(
               libretro-common
               "https://github.com/libretro/libretro-common"
@@ -144,6 +139,9 @@ jobs:
               "v1.3.1"
           )
 
+          #
+          # Build settings
+          #
           set(BUILD_STATIC ON CACHE BOOL "" FORCE)
           set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
           set(BUILD_QT_SDL OFF CACHE BOOL "" FORCE)
@@ -160,29 +158,127 @@ jobs:
               set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
           endif()
 
-          FetchContent_Populate(melonDS)
+          #
+          # ------------------------------------------------------------
+          # melonDS
+          # ------------------------------------------------------------
+          #
+          # Do NOT use FetchContent for melonDS.
+          # Clone the exact upstream commit directly.
+          #
+          set(MELONDS_SOURCE_DIR
+              "${CMAKE_BINARY_DIR}/_deps/melonds-src"
+          )
 
-          FetchContent_GetProperties(melonDS)
+          set(MELONDS_BINARY_DIR
+              "${CMAKE_BINARY_DIR}/_deps/melonds-build"
+          )
 
-          if (NOT melonDS_POPULATED)
-              message(FATAL_ERROR
-                  "melonDS was not populated by FetchContent."
-              )
+          set(MELONDS_REPOSITORY
+              "https://github.com/melonDS-emu/melonDS"
+          )
+
+          set(MELONDS_COMMIT
+              "7117178c2dd56df32b6534ba6a54ad1f8547e693"
+          )
+
+          if (EXISTS "${MELONDS_SOURCE_DIR}/.git")
+              message(STATUS "Removing previous melonDS checkout.")
+              file(REMOVE_RECURSE "${MELONDS_SOURCE_DIR}")
           endif()
 
-          if (NOT EXISTS "${melonds_SOURCE_DIR}/CMakeLists.txt")
-              message(FATAL_ERROR
-                  "melonDS CMakeLists.txt was not found at: ${melonds_SOURCE_DIR}"
-              )
-          endif()
-
-          message(STATUS "melonDS source: ${melonds_SOURCE_DIR}")
-          message(STATUS "melonDS binary: ${melonds_BINARY_DIR}")
+          message(STATUS "Cloning melonDS:")
+          message(STATUS "${MELONDS_REPOSITORY}")
 
           execute_process(
               COMMAND
                   "${GIT_EXECUTABLE}"
-                  -C "${melonds_SOURCE_DIR}"
+                  clone
+                  --filter=blob:none
+                  "${MELONDS_REPOSITORY}"
+                  "${MELONDS_SOURCE_DIR}"
+              RESULT_VARIABLE MELONDS_CLONE_RESULT
+              OUTPUT_VARIABLE MELONDS_CLONE_STDOUT
+              ERROR_VARIABLE MELONDS_CLONE_STDERR
+          )
+
+          if (NOT MELONDS_CLONE_RESULT EQUAL 0)
+              message(STATUS "${MELONDS_CLONE_STDOUT}")
+              message(STATUS "${MELONDS_CLONE_STDERR}")
+
+              message(FATAL_ERROR
+                  "Failed to clone melonDS."
+              )
+          endif()
+
+          execute_process(
+              COMMAND
+                  "${GIT_EXECUTABLE}"
+                  -C "${MELONDS_SOURCE_DIR}"
+                  checkout
+                  "${MELONDS_COMMIT}"
+              RESULT_VARIABLE MELONDS_CHECKOUT_RESULT
+              OUTPUT_VARIABLE MELONDS_CHECKOUT_STDOUT
+              ERROR_VARIABLE MELONDS_CHECKOUT_STDERR
+          )
+
+          if (NOT MELONDS_CHECKOUT_RESULT EQUAL 0)
+              message(STATUS "${MELONDS_CHECKOUT_STDOUT}")
+              message(STATUS "${MELONDS_CHECKOUT_STDERR}")
+
+              message(FATAL_ERROR
+                  "Failed to checkout melonDS commit ${MELONDS_COMMIT}."
+              )
+          endif()
+
+          if (NOT EXISTS
+              "${MELONDS_SOURCE_DIR}/CMakeLists.txt"
+          )
+              message(FATAL_ERROR
+                  "melonDS CMakeLists.txt was not found."
+              )
+          endif()
+
+          message(STATUS
+              "melonDS source: ${MELONDS_SOURCE_DIR}"
+          )
+
+          #
+          # Make the variable names expected by the finalpkg
+          # attribution/configuration files available.
+          #
+          set(melonds_SOURCE_DIR
+              "${MELONDS_SOURCE_DIR}"
+              CACHE PATH "" FORCE
+          )
+
+          set(melonds_BINARY_DIR
+              "${MELONDS_BINARY_DIR}"
+              CACHE PATH "" FORCE
+          )
+
+          set(melonDS_SOURCE_DIR
+              "${MELONDS_SOURCE_DIR}"
+              CACHE PATH "" FORCE
+          )
+
+          set(melonDS_BINARY_DIR
+              "${MELONDS_BINARY_DIR}"
+              CACHE PATH "" FORCE
+          )
+
+          #
+          # ------------------------------------------------------------
+          # HCV-1000 patch
+          # ------------------------------------------------------------
+          #
+          # The supplied patch contains an incompatible NDS.cpp hunk.
+          # Apply every other patch section directly to melonDS.
+          #
+          execute_process(
+              COMMAND
+                  "${GIT_EXECUTABLE}"
+                  -C "${MELONDS_SOURCE_DIR}"
                   apply
                   --whitespace=nowarn
                   --exclude=src/NDS.cpp
@@ -193,18 +289,36 @@ jobs:
           )
 
           if (NOT HCV_PATCH_RESULT EQUAL 0)
-              message(STATUS "HCV patch stdout:")
-              message(STATUS "${HCV_PATCH_STDOUT}")
-              message(STATUS "HCV patch stderr:")
-              message(STATUS "${HCV_PATCH_STDERR}")
+              message(STATUS
+                  "HCV patch stdout:"
+              )
+
+              message(STATUS
+                  "${HCV_PATCH_STDOUT}"
+              )
+
+              message(STATUS
+                  "HCV patch stderr:"
+              )
+
+              message(STATUS
+                  "${HCV_PATCH_STDERR}"
+              )
 
               message(FATAL_ERROR
                   "Failed to apply HCV-1000 patch to melonDS."
               )
           endif()
 
-          message(STATUS "HCV-1000 patch applied successfully.")
+          message(STATUS
+              "HCV-1000 patch applied successfully."
+          )
 
+          #
+          # ------------------------------------------------------------
+          # Supporting dependencies
+          # ------------------------------------------------------------
+          #
           FetchContent_MakeAvailable(
               libretro-common
               embed-binaries
@@ -218,12 +332,28 @@ jobs:
               date
           )
 
+          #
+          # ------------------------------------------------------------
+          # Add melonDS itself.
+          #
+          # This is the point where the 'core' target is created.
+          # ------------------------------------------------------------
+          #
           add_subdirectory(
-              "${melonds_SOURCE_DIR}"
-              "${melonds_BINARY_DIR}"
+              "${MELONDS_SOURCE_DIR}"
+              "${MELONDS_BINARY_DIR}"
           )
 
-          message(STATUS "melonDS dependency configured successfully.")
+          if (NOT TARGET core)
+              message(FATAL_ERROR
+                  "melonDS was added, but target 'core' was not created."
+              )
+          endif()
+
+          message(STATUS
+              "melonDS target 'core' created successfully."
+          )
+
           CMAKE
 
           echo "FetchDependencies.cmake replaced successfully."
@@ -233,7 +363,15 @@ jobs:
         run: |
           set -e
 
-          CMAKE_DIR=$(find source -name CMakeLists.txt -type f -print | grep '/finalpkg/CMakeLists.txt$' | head -n 1 | xargs -I{} dirname "{}")
+          CMAKE_DIR=$(
+            find source \
+              -name CMakeLists.txt \
+              -type f \
+              -print |
+            grep '/finalpkg/CMakeLists.txt$' |
+            head -n 1 |
+            xargs -I{} dirname "{}"
+          )
 
           if [ -z "$CMAKE_DIR" ]; then
             echo "finalpkg CMakeLists.txt not found"
@@ -261,7 +399,13 @@ jobs:
         run: |
           set -e
 
-          NDS=$(find build -path "*/melonds-src/src/NDS.cpp" -type f -print -quit)
+          NDS=$(
+            find build \
+              -path "*/melonds-src/src/NDS.cpp" \
+              -type f \
+              -print \
+              -quit
+          )
 
           if [ -z "$NDS" ]; then
             echo "melonDS NDS.cpp was not found."
@@ -270,11 +414,19 @@ jobs:
 
           MELONDS_ROOT=$(dirname "$(dirname "$NDS")")
 
-          test -f "$MELONDS_ROOT/src/libretro/config/hcv1000.cpp"
-          test -f "$MELONDS_ROOT/src/libretro/config/hcv1000.hpp"
+          echo "melonDS root:"
+          echo "$MELONDS_ROOT"
+
+          test -f \
+            "$MELONDS_ROOT/src/libretro/config/hcv1000.cpp"
+
+          test -f \
+            "$MELONDS_ROOT/src/libretro/config/hcv1000.hpp"
+
+          test -f \
+            "$MELONDS_ROOT/src/libretro/config/console.cpp"
 
           echo "HCV-1000 source files verified."
-          echo "melonDS root: $MELONDS_ROOT"
 
       - name: Build
         shell: bash
