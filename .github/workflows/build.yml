@@ -34,6 +34,33 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
+      - name: Remove broken NDS patch
+        shell: bash
+        run: |
+          set -e
+          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+
+          python3 - "$PATCH" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          parts = text.split("diff --git ")
+          result = []
+
+          for part in parts:
+              if not part:
+                  continue
+              if part.startswith("a/src/NDS.cpp b/src/NDS.cpp"):
+                  continue
+              result.append("diff --git " + part)
+
+          path.write_text("".join(result))
+          print("Removed NDS.cpp patch hunk.")
+          PY
+
       - name: Locate CMake project
         shell: bash
         run: |
@@ -44,13 +71,69 @@ jobs:
             exit 1
           fi
           echo "CMAKE_DIR=$CMAKE_DIR" >> "$GITHUB_ENV"
+          echo "Using: $CMAKE_DIR"
 
-      - name: Build
+      - name: Configure
         shell: bash
         run: |
           set -e
           rm -rf build
           cmake -S "$CMAKE_DIR" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Inject HCV-1000 startup code
+        shell: bash
+        run: |
+          set -e
+
+          NDS=$(find build -path "*/melonds-src/src/NDS.cpp" -type f -print -quit)
+
+          if [ -z "$NDS" ]; then
+            echo "melonds NDS.cpp not found"
+            find build -name NDS.cpp -print
+            exit 1
+          fi
+
+          python3 - "$NDS" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          anchor = """    auto* ndscart = NDSCartSlot.GetCart();
+    if (!ndscart)
+        return;
+"""
+
+          insert = """    // HCV-1000 Love & Berry DS Collection
+    if (ndscart->GetHeader().GameCode[0] == 'A' &&
+        ndscart->GetHeader().GameCode[1] == 'L' &&
+        ndscart->GetHeader().GameCode[2] == 'B' &&
+        ndscart->GetHeader().GameCode[3] == 'J')
+    {
+        GBACartSlot.SetCart(std::make_unique<GBACart::CartSegaCardReader>());
+        ExMemCnt[0] = 0xE877;
+        SetGBASlotTimings();
+    }
+
+"""
+
+          if insert in text:
+              print("HCV-1000 code already present.")
+          elif anchor not in text:
+              print("NDS.cpp insertion point not found.")
+              sys.exit(1)
+          else:
+              text = text.replace(anchor, anchor + insert, 1)
+              path.write_text(text)
+              print("HCV-1000 startup code injected.")
+
+          PY
+
+      - name: Build
+        shell: bash
+        run: |
+          set -e
           cmake --build build --parallel
 
       - name: Package
@@ -60,6 +143,7 @@ jobs:
           rm -rf artifact
           mkdir -p artifact
           cp -R build/. artifact/
+
           printf '%s\n' \
             'HCV-1000 Love & Berry iOS core' \
             'Target: melonDS DS 1.3.1' \
@@ -75,4 +159,3 @@ jobs:
           name: HCV1000-LoveBerry-iOS-core
           path: artifact/
           if-no-files-found: error
-          # trigger
