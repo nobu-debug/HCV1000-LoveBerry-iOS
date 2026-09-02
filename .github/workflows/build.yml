@@ -18,10 +18,15 @@ jobs:
         shell: bash
         run: |
           set -e
+
           xcodebuild -showsdks
+
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+
           test -d "$SDK"
+
           echo "IOS_SDK=$SDK" >> "$GITHUB_ENV"
+
           echo "iPhoneOS SDK: $SDK"
 
       - name: Find source ZIP
@@ -37,6 +42,7 @@ jobs:
           fi
 
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
           echo "Using: $ZIP"
 
       - name: Extract source
@@ -45,6 +51,7 @@ jobs:
           set -e
 
           rm -rf source
+
           mkdir -p source
 
           unzip -q "$ZIP" -d source
@@ -324,6 +331,7 @@ jobs:
           fi
 
           echo "CMAKE_DIR=$CMAKE_DIR" >> "$GITHUB_ENV"
+
           echo "Using: $CMAKE_DIR"
 
       - name: Configure for iPhoneOS arm64
@@ -349,25 +357,41 @@ jobs:
         run: |
           set -e
 
-          grep -E '^CMAKE_SYSTEM_NAME:|^CMAKE_OSX_SYSROOT:|^CMAKE_OSX_ARCHITECTURES:' build/CMakeCache.txt
+          echo "=== CMake iOS configuration ==="
 
-          grep -q 'CMAKE_SYSTEM_NAME:STRING=iOS' build/CMakeCache.txt
-          grep -q 'CMAKE_OSX_ARCHITECTURES:STRING=arm64' build/CMakeCache.txt
+          grep '^CMAKE_SYSTEM_NAME:' build/CMakeCache.txt || true
+          grep '^CMAKE_OSX_SYSROOT:' build/CMakeCache.txt || true
+          grep '^CMAKE_OSX_ARCHITECTURES:' build/CMakeCache.txt || true
 
-          SDK_PATH=$(grep '^CMAKE_OSX_SYSROOT:PATH=' build/CMakeCache.txt | cut -d= -f2-)
+          SYSTEM_NAME=$(
+            grep '^CMAKE_SYSTEM_NAME:' build/CMakeCache.txt |
+            cut -d= -f2-
+          )
 
-          if [ -z "$SDK_PATH" ]; then
-            echo "iPhoneOS SDK was not configured."
+          ARCHS=$(
+            grep '^CMAKE_OSX_ARCHITECTURES:' build/CMakeCache.txt |
+            cut -d= -f2-
+          )
+
+          SYSROOT=$(
+            grep '^CMAKE_OSX_SYSROOT:' build/CMakeCache.txt |
+            cut -d= -f2-
+          )
+
+          if [ "$SYSTEM_NAME" != "iOS" ]; then
+            echo "Wrong CMAKE_SYSTEM_NAME: $SYSTEM_NAME"
             exit 1
           fi
 
-          case "$SDK_PATH" in
-            *iPhoneOS.sdk*) ;;
-            *)
-              echo "Wrong SDK: $SDK_PATH"
-              exit 1
-              ;;
-          esac
+          if [ "$ARCHS" != "arm64" ]; then
+            echo "Wrong architecture: $ARCHS"
+            exit 1
+          fi
+
+          if [[ "$SYSROOT" != *"iPhoneOS.platform"* ]]; then
+            echo "Wrong SDK: $SYSROOT"
+            exit 1
+          fi
 
           echo "Confirmed: iPhoneOS arm64 configuration."
 
@@ -383,11 +407,13 @@ jobs:
         run: |
           set -e
 
-          DYLIB=$(find build \
-            -type f \
-            -name 'melondsds_libretro.dylib' \
-            -print \
-            | head -n 1)
+          DYLIB=$(
+            find build \
+              -type f \
+              -name 'melondsds_libretro.dylib' \
+              -print |
+            head -n 1
+          )
 
           if [ -z "$DYLIB" ]; then
             echo "melondsds_libretro.dylib not found."
@@ -397,16 +423,20 @@ jobs:
           echo "Binary: $DYLIB"
 
           file "$DYLIB"
+
           lipo -info "$DYLIB"
 
           file "$DYLIB" | grep -q 'arm64'
 
-          SDK_INFO=$(otool -l "$DYLIB" | grep -A3 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' || true)
+          PLATFORM_INFO=$(
+            otool -l "$DYLIB" |
+            grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' || true
+          )
 
-          echo "$SDK_INFO"
+          echo "$PLATFORM_INFO"
 
-          if ! echo "$SDK_INFO" | grep -q 'platform IOS'; then
-            echo "Binary is not confirmed as iOS."
+          if ! echo "$PLATFORM_INFO" | grep -qi 'platform IOS'; then
+            echo "Binary is not confirmed as an iOS binary."
             exit 1
           fi
 
@@ -418,6 +448,7 @@ jobs:
           set -e
 
           rm -rf artifact
+
           mkdir -p artifact
 
           cp -R build/. artifact/
