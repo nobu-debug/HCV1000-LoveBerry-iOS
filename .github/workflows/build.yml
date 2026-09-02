@@ -18,6 +18,7 @@ jobs:
         shell: bash
         run: |
           set -e
+
           ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
@@ -32,27 +33,54 @@ jobs:
         shell: bash
         run: |
           set -e
+
           rm -rf source
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Prepare HCV-1000 patch
+      - name: Disable bundled patch application
         shell: bash
         run: |
           set -e
 
-          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+          FILE="source/finalpkg/cmake/FetchDependencies.cmake"
 
-          if [ ! -f "$PATCH" ]; then
-            echo "HCV-1000 patch not found: $PATCH"
+          if [ ! -f "$FILE" ]; then
+            echo "FetchDependencies.cmake not found"
             exit 1
           fi
 
-          cp "$PATCH" "$RUNNER_TEMP/hcv1000.patch"
-          : > "$PATCH"
+          python3 - "$FILE" <<'PY'
+          import sys
+          from pathlib import Path
 
-          echo "Original HCV-1000 patch saved."
-          echo "Bundled patch neutralized."
+          path = Path(sys.argv[1])
+          text = path.read_text()
+
+          target = "melonds-7117178-hcv1000-loveberry.patch"
+
+          lines = text.splitlines(True)
+          found = False
+          output = []
+
+          for line in lines:
+              if target in line and "git apply" in line:
+                  output.append("# DISABLED HCV-1000 bundled patch: " + line)
+                  found = True
+              else:
+                  output.append(line)
+
+          if not found:
+              print("Bundled patch command not found.")
+              print("Lines containing HCV/patch:")
+              for i, line in enumerate(lines, 1):
+                  if "HCV" in line or "hcv" in line or "patch" in line:
+                      print(f"{i}: {line.rstrip()}")
+              sys.exit(1)
+
+          path.write_text("".join(output))
+          print("Bundled HCV-1000 git apply command disabled.")
+          PY
 
       - name: Configure
         shell: bash
@@ -67,19 +95,24 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Apply HCV-1000 libretro changes
+      - name: Apply HCV-1000 patch
         shell: bash
         run: |
           set -e
 
+          PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
+
           MELONDS=$(find build -type d -name melonds-src -print -quit)
 
           if [ -z "$MELONDS" ]; then
-            echo "melonds-src not found after Configure"
+            echo "melonds-src not found"
             exit 1
           fi
 
-          echo "Using melonDS source: $MELONDS"
+          if [ ! -f "$PATCH" ]; then
+            echo "HCV-1000 patch not found"
+            exit 1
+          fi
 
           cd "$MELONDS"
 
@@ -88,9 +121,9 @@ jobs:
             --include=src/libretro/config/console.cpp \
             --include=src/libretro/config/hcv1000.cpp \
             --include=src/libretro/config/hcv1000.hpp \
-            "$RUNNER_TEMP/hcv1000.patch"
+            "$GITHUB_WORKSPACE/$PATCH"
 
-          echo "HCV-1000 libretro changes applied."
+          echo "HCV-1000 patch applied."
 
       - name: Build
         shell: bash
@@ -114,8 +147,7 @@ jobs:
             'Game: Oshare Majo Love and Berry: DS Collection' \
             'Game code: ALBJ' \
             'Default HCV-1000 card: 0UMLMHQ697D' \
-            'HCV-1000 implementation: built-in libretro Slot-2 device' \
-            'This package contains the generated build.' \
+            'HCV-1000 implementation: libretro Slot-2 device' \
             > artifact/README.txt
 
       - name: Upload iOS core
