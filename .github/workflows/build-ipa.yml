@@ -60,7 +60,6 @@ jobs:
 
           echo "HCV_DYLIB=$PWD/$DYLIB" >> "$GITHUB_ENV"
 
-          echo "Found HCV-1000 core:"
           file "$DYLIB"
           lipo -info "$DYLIB"
 
@@ -79,14 +78,11 @@ jobs:
 
           mkdir -p "$MODULES"
 
-          echo "Installing HCV-1000 melonDS core..."
-
           cp "$HCV_DYLIB" \
             "$MODULES/melondsds_libretro.dylib"
 
           touch "$MODULES/melondsds_libretro.dylib.local"
 
-          echo "Installed:"
           ls -lh "$MODULES/melondsds_libretro.dylib"
           file "$MODULES/melondsds_libretro.dylib"
 
@@ -100,8 +96,6 @@ jobs:
 
           test -f "$MODULES/melondsds_libretro.dylib"
           test -f "$MODULES/melondsds_libretro.dylib.local"
-
-          echo "HCV-1000 core protection confirmed."
 
       - name: Generate required Provenance data
         working-directory: provenance
@@ -138,6 +132,7 @@ jobs:
             -destination "generic/platform=iOS" \
             -configuration Release \
             -archivePath "$PWD/build/Provenance.xcarchive" \
+            archive \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             CODE_SIGNING_REQUIRED=NO \
@@ -146,6 +141,8 @@ jobs:
             SKIP_INSTALL=NO \
             SWIFT_PACKAGE_ALLOW_WRITING_TO_DIRECTORY="$PWD" \
             2>&1 | tee "$PWD/build/xcodebuild.log" | xcbeautify
+
+          test -d "$PWD/build/Provenance.xcarchive"
 
       - name: Verify archived app
         working-directory: provenance
@@ -160,18 +157,10 @@ jobs:
 
           if [ -z "$APP" ]; then
             echo "::error::Provenance.app was not found in archive."
-            find build/Provenance.xcarchive \
-              -maxdepth 5 \
-              -type d \
-              -name '*.app' \
-              -print || true
             exit 1
           fi
 
           echo "APP=$PWD/$APP" >> "$GITHUB_ENV"
-
-          echo "Archived application:"
-          echo "$APP"
 
       - name: Verify HCV-1000 core inside archive
         shell: bash
@@ -184,19 +173,12 @@ jobs:
             -print | head -n 1)
 
           if [ -z "$FOUND" ]; then
-            echo "::error::HCV-1000 melondsds_libretro.dylib is not inside the final app."
-            find "$APP" \
-              -type f \
-              -name '*.dylib' \
-              -print | head -100
+            echo "::error::HCV-1000 core is not inside the final app."
             exit 1
           fi
 
-          echo "HCV-1000 core inside app:"
           file "$FOUND"
           lipo -info "$FOUND"
-
-          echo "HCV-1000 core successfully embedded."
 
       - name: Fakesign main application
         working-directory: provenance
@@ -220,7 +202,6 @@ jobs:
           set -e
 
           rm -rf IPA
-
           mkdir -p IPA/Payload
 
           cp -pR \
@@ -237,7 +218,6 @@ jobs:
 
           test -f HCV1000-LoveBerry-Provenance-iOS.ipa
 
-          echo "IPA created:"
           ls -lh HCV1000-LoveBerry-Provenance-iOS.ipa
 
       - name: Upload IPA
