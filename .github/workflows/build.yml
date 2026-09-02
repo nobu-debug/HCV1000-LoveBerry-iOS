@@ -435,7 +435,7 @@ jobs:
 
           echo "$PLATFORM_INFO"
 
-          if ! echo "$PLATFORM_INFO" | grep -qi 'platform IOS'; then
+          if ! echo "$PLATFORM_INFO" | grep -qE 'platform (2|IOS)'; then
             echo "Binary is not confirmed as an iOS binary."
             exit 1
           fi
