@@ -38,139 +38,63 @@ jobs:
           mkdir -p source
           unzip -q "$ZIP" -d source
 
-      - name: Disable bundled HCV-1000 patch
-        shell: bash
-        run: |
-          set -e
-
-          FILE="source/finalpkg/cmake/FetchDependencies.cmake"
-
-          if [ ! -f "$FILE" ]; then
-            echo "FetchDependencies.cmake not found"
-            exit 1
-          fi
-
-          python3 - "$FILE" <<'PY'
-          import sys
-          from pathlib import Path
-
-          path = Path(sys.argv[1])
-          lines = path.read_text().splitlines()
-
-          out = []
-          i = 0
-          removed_execute = False
-          removed_if = False
-
-          while i < len(lines):
-              line = lines[i]
-
-              if not removed_execute and line.strip() == "execute_process(":
-                  block = []
-                  depth = 0
-
-                  while i < len(lines):
-                      current = lines[i]
-                      block.append(current)
-
-                      depth += current.count("(")
-                      depth -= current.count(")")
-
-                      i += 1
-
-                      if depth == 0:
-                          break
-
-                  block_text = "\n".join(block)
-
-                  if (
-                      "HCV_PATCH_RESULT" in block_text
-                      and "melonds-7117178-hcv1000-loveberry.patch" in block_text
-                  ):
-                      print("Removed bundled HCV-1000 execute_process block.")
-                      removed_execute = True
-                      continue
-
-                  out.extend(block)
-                  continue
-
-              if (
-                  removed_execute
-                  and not removed_if
-                  and line.strip() == "if (NOT HCV_PATCH_RESULT EQUAL 0)"
-              ):
-                  i += 1
-
-                  while i < len(lines):
-                      if lines[i].strip() == "endif()":
-                          i += 1
-                          break
-                      i += 1
-
-                  print("Removed bundled HCV-1000 error-check block.")
-                  removed_if = True
-                  continue
-
-              out.append(line)
-              i += 1
-
-          if not removed_execute:
-              print("Bundled HCV-1000 execute_process block was not found.")
-              sys.exit(1)
-
-          path.write_text("\n".join(out) + "\n")
-          print("Bundled HCV-1000 patch disabled successfully.")
-          PY
-
-      - name: Configure dependencies
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf build
-
-          cmake \
-            -S source/finalpkg \
-            -B build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Apply HCV-1000 patch
+      - name: Remove incompatible NDS.cpp patch hunk
         shell: bash
         run: |
           set -e
 
           PATCH="source/finalpkg/patches/melonds-7117178-hcv1000-loveberry.patch"
 
-          MELONDS=$(find build -type d -name melonds-src -print -quit)
-
-          if [ -z "$MELONDS" ]; then
-            echo "melonds-src not found"
-            exit 1
-          fi
-
           if [ ! -f "$PATCH" ]; then
             echo "HCV-1000 patch not found"
             exit 1
           fi
 
-          echo "Using melonDS source: $MELONDS"
+          python3 - "$PATCH" <<'PY'
+          import sys
+          import re
+          from pathlib import Path
 
-          cd "$MELONDS"
+          path = Path(sys.argv[1])
+          text = path.read_text()
 
-          git apply \
-            --include=src/libretro/CMakeLists.txt \
-            --include=src/libretro/config/console.cpp \
-            --include=src/libretro/config/hcv1000.cpp \
-            --include=src/libretro/config/hcv1000.hpp \
-            "$GITHUB_WORKSPACE/$PATCH"
+          parts = re.split(r'(?=^diff -ruN )', text, flags=re.MULTILINE)
 
-          echo "HCV-1000 patch applied."
+          kept = []
+          removed = False
 
-      - name: Reconfigure with HCV-1000
+          for part in parts:
+              if part.startswith("diff -ruN "):
+                  header = part.splitlines()[0]
+
+                  if "/src/NDS.cpp " in header:
+                      print("Removed incompatible NDS.cpp patch section.")
+                      removed = True
+                      continue
+
+              kept.append(part)
+
+          if not removed:
+              print("ERROR: NDS.cpp patch section was not found.")
+              sys.exit(1)
+
+          new_text = "".join(kept)
+
+          if "/src/NDS.cpp " in new_text:
+              print("ERROR: NDS.cpp patch reference still remains.")
+              sys.exit(1)
+
+          path.write_text(new_text)
+
+          print("HCV-1000 patch prepared successfully.")
+          PY
+
+      - name: Configure
         shell: bash
         run: |
           set -e
+
+          rm -rf build
 
           cmake \
             -S source/finalpkg \
